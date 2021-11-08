@@ -20,15 +20,15 @@ import ipdb
 cv2.setNumThreads(0)
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-# if platform.system() == 'Windows':
-#     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-#     device_ids = [0]
-#
-# else:
-#     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-#     device_ids = [0, 1, 2, 3]
-#     torch.backends.cudnn.benchmark = True
-# device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
+if platform.system() == 'Windows':
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    device_ids = [0]
+
+else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+    device_ids = [0, 1, 2, 3]
+    torch.backends.cudnn.benchmark = True
+device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(1)
 torch.cuda.manual_seed_all(1)
@@ -36,7 +36,7 @@ np.random.seed(1)
 
 epoch_size = 5000
 FRAME = 128
-BATCH_SIZE = 1
+BATCH_SIZE = 8
 random.seed(1)
 LR = 6e-6
 W1 = 5
@@ -114,8 +114,8 @@ if __name__ == '__main__':
     writer = SummaryWriter(log_dir=log_dir)
 
     # lastCkptPath = '/p300/SWRNET/checkpoint/ckpt350_trainMAE_0.8896425843327483.pt'
-    # lastCkptPath = '/p300/SWRNET/checkpoint2/ckpt15_trainMAE_1.498641728136049.pt'
-    lastCkptPath = None
+    lastCkptPath = '/p300/SWRNET/checkpoint2/ckpt15_trainMAE_1.498641728136049.pt'
+    # lastCkptPath = None
     if lastCkptPath is not None:
         print("loading checkpoint")
         checkpoint = torch.load(lastCkptPath)

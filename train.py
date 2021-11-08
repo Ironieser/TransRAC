@@ -37,13 +37,13 @@ torch.cuda.manual_seed_all(1)
 np.random.seed(1)
 
 epoch_size = 5000
-FRAME = 10
+FRAME = 128
 BATCH_SIZE = 2
 random.seed(1)
 LR = 6e-6
 W1 = 5
 W2 = 1
-NUM_WORKERS = 0
+NUM_WORKERS = 32
 
 
 def eval_model(y1, y2, label_count):

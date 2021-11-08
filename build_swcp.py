@@ -96,7 +96,7 @@ class PositionalEncoding(nn.Module):
         return x
 
 
-class swrepnet(nn.Module):
+class swcp(nn.Module):
     """
     input = torch.rand([B, F, C, 224, 224])
     output = [B,F]
@@ -110,7 +110,9 @@ class swrepnet(nn.Module):
                  transformer_dropout_rate: float = 0.0,
                  transformer_reorder_ln: bool = True,
                  dropout_rate=0.5,
-                 density_fc_channels=(512, 512)
+                 density_fc_channels=(512, 512),
+                 period_fc_channels: tuple = (512, 512),
+                 within_period_fc_channels: tuple = (512, 512)
                  # pos_encoding=None
                  ):
         super().__init__()
@@ -118,7 +120,9 @@ class swrepnet(nn.Module):
         self.num_frames = frame
         self.dropout_rate = dropout_rate
         self.num_heads = head
-        self.density_fc_channels = density_fc_channels
+        # self.density_fc_channels = density_fc_channels
+        self.period_fc_channels = period_fc_channels
+        self.within_period_fc_channels = within_period_fc_channels
         self.sw_1 = SwinTransformer()  # output (128,)
         self.sm = Similarity_matrix(num_heads=self.num_heads)
 
@@ -131,8 +135,6 @@ class swrepnet(nn.Module):
 
         self.pos_encoder = PositionalEncoding(self.num_frames)
         self.pos_encoder2 = PositionalEncoding(self.num_frames)
-
-
 
         self.transformer_layers = nn.ModuleList()
         for d_model, num_heads, dff in self.transformer_layers_config:
@@ -150,78 +152,76 @@ class swrepnet(nn.Module):
                                            dim_feedforward=dff,
                                            dropout=self.transformer_dropout_rate))
 
-        # period length prediction
         self.dropout_layer = nn.Dropout(self.dropout_rate)
+
+        # period length prediction
         num_preds = self.num_frames
-        self.DensityMapLayer = nn.ModuleList()
-        self.DensityMapLayer.append(
-            nn.Linear(in_features=self.density_fc_channels[0] * self.num_frames,
-                      out_features=self.density_fc_channels[0])
-        )
-        self.DensityMapLayer.append(nn.ReLU())
-        for channels in self.density_fc_channels:
-            self.DensityMapLayer.append(
+        self.fc_layers = nn.ModuleList()
+        for channels in self.period_fc_channels:
+            self.fc_layers.append(
                 nn.Linear(in_features=channels,
                           out_features=channels)
-
             )
-            self.DensityMapLayer.append(nn.ReLU())
-        self.DensityMapLayer.append(
-            nn.Linear(in_features=self.density_fc_channels[0],
-                      out_features=self.num_frames)
+            self.fc_layers.append(nn.ReLU())
+        self.fc_layers.append(
+            nn.Linear(in_features=self.period_fc_channels[0],
+                      out_features=num_preds)
         )
 
-        # periodicity prediction
-
-        # counterLayer
-        self.counterLayer = nn.ModuleList()
-        self.counterLayer.append(
-            nn.Linear(in_features=self.density_fc_channels[0] * self.num_frames,
-                      out_features=self.density_fc_channels[0])
-        )
-        self.counterLayer.append(nn.ReLU())
-        for channels in self.density_fc_channels:
-            self.counterLayer.append(
+        # Within Period Module
+        num_preds = 1
+        self.within_period_fc_layers = nn.ModuleList()
+        for channels in self.within_period_fc_channels:
+            self.within_period_fc_layers.append(
                 nn.Linear(in_features=channels,
                           out_features=channels)
-
             )
-            self.counterLayer.append(nn.ReLU())
-        self.counterLayer.append(
-            nn.Linear(in_features=self.density_fc_channels[0],
-                      out_features=1)
+            self.within_period_fc_layers.append(nn.ReLU())
+        self.within_period_fc_layers.append(
+            nn.Linear(in_features=self.within_period_fc_channels[0],
+                      out_features=num_preds)
         )
-        # self.fc1 = nn.Linear(1024, )
-        # self.transformer = nn.TransformerEncoderLayer(d_model=512, nhead=4, dim_feedforward=512)
         self.apply(self._init_weights)
 
     def forward(self, x):
-        # swin transformer features extracted per frame
+
+        # Ensures we are always using the right batch_size during train/eval.
         b, f, c, h, w = x.shape  # x:[B,F,C,H,W]  [B,F,3,224,224]
         assert self.image_size == x.shape[3]
+
+        # Swin_T Feature Extractor per frame
         x = x.view([-1, c, self.image_size, self.image_size])
         with torch.no_grad():
             x = self.sw_1(x)  # output: [b*f,128]
         x = x.view([b, -1, 128])  # output: [B, frames, features]
+
+        # Get self-similarity matrix.
         x = self.sm(x, x, x)  # output:[B, head, H_frames, W_frames]
         x = x.transpose(1, 2)  # to output:[B, H_frames, head, W_frames]
         x = torch.reshape(x, [b, f, -1])  # output: [B, f，head*f] [2,10,4*10]
-        x = self.input_projection(x)  # output: [B, f，512]
+        within_period_x = x
 
+        # Period prediction.
+        x = self.input_projection(x)  # output: [B, f，512]
         x = self.pos_encoder(x)  # output:x += [1,f,1]
         for transformer_layer in self.transformer_layers:
             x = transformer_layer(x)  # output: [b,f,512]
-        x2 = x.reshape([b, -1])  # => [b,f*512]
-        for fc in self.DensityMapLayer:
+        for fc in self.fc_layers:
             x = self.dropout_layer(x)
             x = fc(x)
-        # output: [b,f]
+        # output: [b,f,num_preds]
 
-        for fc in self.counterLayer:
-            x2 = self.dropout_layer(x2)
-            x2 = fc(x2)
-        # output: [b,1]
-        return x, x2
+        # Within period prediction.
+        within_period_x = self.input_projection2(within_period_x)  # output: [B, f，512]
+        within_period_x = self.pos_encoder2(within_period_x)  # output:x += [1,f,1]
+        for transformer_layer in self.transformer_layers2:
+            within_period_x = transformer_layer(within_period_x)  # output: [b,f,512]
+        for fc in self.within_period_fc_layers:
+            within_period_x = self.dropout_layer(within_period_x)
+            within_period_x = fc(within_period_x)
+        within_period_x = within_period_x.reshape([b,-1])
+        # output: [b,f]
+        return x, within_period_x
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):

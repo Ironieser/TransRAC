@@ -1,7 +1,8 @@
 import cv2
 import torch
 import torch.nn as nn
-from build_swrepnet import swrepnet
+# from build_swrepnet import swrepnet
+from build_swcp import swcp
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from dataset import MyDataset
@@ -29,40 +30,43 @@ else:
     device_ids = [0, 1, 2, 3]
     torch.backends.cudnn.benchmark = True
 device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device('cpu')
 torch.manual_seed(1)
 torch.cuda.manual_seed_all(1)
 np.random.seed(1)
 
 epoch_size = 5000
-FRAME = 128
-BATCH_SIZE = 8
+FRAME = 10
+BATCH_SIZE = 2
 random.seed(1)
 LR = 6e-6
 W1 = 5
 W2 = 1
-NUM_WORKERS = 32
+NUM_WORKERS = 0
 
 
-def eval_model(count, y1, y2, w1, w2):
-    label_count = count.detach().cpu().numpy().flatten()
-    pre_count = (w1 * y1.sum(dim=1).detach().cpu().numpy() + w2 * y2.detach().cpu().numpy().flatten()) / (w1 + w2)
-    # pre_count = (w1 * y1.sum(dim=1).detach().cpu().numpy()) / (w1)
-    # print(label_count)
+def eval_model(y1, y2, label_count):
+    y1 = torch.argmax(y1, dim=2)  # [b,f]
+    pre_count = torch.zeros([y1.shape[0]]).cuda()
+    for _ in range(y1.shape[0]):
+        for i in range(y1.shape[1]):
+            if y1[_][i] != 0:
+                pre_count[_] += y2[_][i] / y1[_][i]
+
     gap_abs = abs(pre_count - label_count) / label_count
-    MAE = np.sum(gap_abs) / len(label_count)
-    OBO = 0
-    for i in range(len(label_count)):
-        if abs(pre_count - label_count)[i] < 1:
-            OBO += 1
-    OBO /= len(label_count)
-    return MAE, OBO, pre_count, label_count
-    pass
+    MAE = gap_abs.sum() / len(label_count)
+    OBO = float((abs(pre_count - label_count) < 1).sum())
+    # for i in range(len(label_count)):
+    #     if abs(pre_count - label_count)[i] < 1:
+    #         OBO += 1
+    OBO /= float(len(label_count))
+    return float(MAE), OBO, pre_count.cpu().detach().numpy()
 
 
 if __name__ == '__main__':
 
-    model = swrepnet(frame=FRAME)
+    model = swcp(frame=FRAME)
     model = torch.nn.DataParallel(model.to(device), device_ids=device_ids)
     # model = MMDataParallel(model.to(device), device_ids=device_ids)
 
@@ -85,8 +89,8 @@ if __name__ == '__main__':
                               shuffle=True, num_workers=NUM_WORKERS)
     valid_loader = DataLoader(dataset=valid_dataset, pin_memory=True, batch_size=BATCH_SIZE, drop_last=False,
                               shuffle=True, num_workers=NUM_WORKERS)
-    criterion1 = nn.MSELoss()
-    criterion2 = nn.SmoothL1Loss()
+    criterion1 = nn.CrossEntropyLoss()
+    criterion2 = nn.BCEWithLogitsLoss()
     w1 = W1
     w2 = W2
     scaler = GradScaler()
@@ -114,8 +118,8 @@ if __name__ == '__main__':
     writer = SummaryWriter(log_dir=log_dir)
 
     # lastCkptPath = '/p300/SWRNET/checkpoint/ckpt350_trainMAE_0.8896425843327483.pt'
-    lastCkptPath = '/p300/SWRNET/checkpoint2/ckpt15_trainMAE_1.498641728136049.pt'
-    # lastCkptPath = None
+    # lastCkptPath = '/p300/SWRNET/checkpoint2/ckpt15_trainMAE_1.498641728136049.pt'
+    lastCkptPath = None
     if lastCkptPath is not None:
         print("loading checkpoint")
         checkpoint = torch.load(lastCkptPath)
@@ -150,21 +154,22 @@ if __name__ == '__main__':
         pbar = tqdm(train_loader, total=len(train_loader))
         batch_idx = 0
         model.train()
-        for datas, labels, count in pbar:
+        for datas, target1, target2, count in pbar:
             # ipdb.set_trace()
             # print('///////////////////////{} begin to train/////////////////////////////'.format(batch_idx))
             # torch.cuda.empty_cache()
             datas = datas.to(device)
-            labels = labels.to(device)  # output: [b,f]
+            target1 = target1.to(device)  # output: [b,f]
+            target2 = target2.to(device)  # output: [b,f]
             count = count.to(device).reshape([-1, 1])
             optimizer.zero_grad()
 
             # 向前传播
             with autocast():
 
-                y1, y2 = model(datas)  # output : [b,f]
-                loss1 = criterion1(y1, labels)
-                loss2 = criterion2(y2, count.float())
+                y1, y2 = model(datas)  # output : [b,f,period]
+                loss1 = criterion1(y1.transpose(1, 2), target1)
+                loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
             # 反向传播 scaler 放大梯度
             scaler.scale(loss.float()).backward()
@@ -172,18 +177,18 @@ if __name__ == '__main__':
             scaler.update()
 
             # 输出结果
-            MAE, OBO, pre_count, label_count = eval_model(count, y1, y2, w1, w2)
-
-            train_label.append(label_count[0])
+            MAE, OBO, pre_count = eval_model(y1, y2, count)
+            count = count.cpu()
+            train_label.append(count[0])
             train_pre.append(pre_count[0])
-            train_gap.append(pre_count[0] - label_count[0])
+            train_gap.append(pre_count[0] - count[0])
 
             train_MAE.append(MAE)
             train_OBO.append(OBO)
             avg_loss.append(float(loss))
             avg_loss1.append(float(loss1))
             avg_loss2.append(float(loss2))
-            del datas, labels, y1, y2
+
             if batch_idx % 10 == 0:
                 pbar.set_postfix({'Epoch': epoch,
                                   'loss': float(np.mean(avg_loss)),
@@ -202,25 +207,28 @@ if __name__ == '__main__':
             writer.add_scalars('train/batch_Loss1', {"Loss1": float(loss1)}, epoch * len(train_loader) + batch_idx)
             writer.add_scalars('train/batch_Loss2', {"Loss2": float(loss2)}, epoch * len(train_loader) + batch_idx)
             batch_idx += 1
+            break
         # valid
         pbar = tqdm(valid_loader, total=len(valid_loader))
         # print("********* Validation *********")
         model.eval()
         batch_idx = 0
-        for datas, labels, count in pbar:
+        for datas, target1, target2, count in pbar:
             datas = datas.to(device)
-            labels = labels.to(device)
+            target1 = target1.to(device)  # output: [b,f]
+            target2 = target2.to(device)  # output: [b,f]
             count = count.to(device).reshape([-1, 1])
             # 向前传播
             with torch.no_grad():
-                y1, y2 = model(datas)
-                loss1 = criterion1(y1, labels)
-                loss2 = criterion2(y2, count.float())
+                y1, y2 = model(datas)  # output : [b,f,period]
+                loss1 = criterion1(y1.transpose(1, 2), target1)
+                loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
-            MAE, OBO, pre_count, label_count = eval_model(count, y1, y2, w1, w2)
-            del datas, labels, y1, y2
+            MAE, OBO, pre_count = eval_model( y1, y2, count)
+            count = count.cpu()
             valid_MAE.append(MAE)
             valid_OBO.append(OBO)
+
             val_loss.append(float(loss))
             val_loss1.append(float(loss1))
             val_loss2.append(float(loss2))

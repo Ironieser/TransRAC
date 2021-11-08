@@ -6,10 +6,10 @@ import cv2
 import torch
 import pandas as pd
 import math
-from lable2normal import normalize_label
+from label2rep import rep_label
 from torch.utils.data import Dataset, DataLoader
-# import matplotlib.pyplot as plt
 
+import matplotlib.pyplot as plt
 
 cv2.setNumThreads(0)
 import time
@@ -54,18 +54,31 @@ class MyDataset(Dataset):
 
     def __getitem__(self, index):
         """
-        获取数据集中的item
-         video_imgs :tensor:[f,c,h,w]
-         label : tensor:[f]
-         """
+
+        Args:
+            index:
+
+        Returns:
+            video_imgs: loaded video to imgs
+            y1: period length  0 - max period
+            y2: within period  0 - 1
+            num_period : count by processing labels:(y2/y1)[~np.isnan(y2/y1)].sum()
+            ps: if count !=  num_period : return num_period
+        """
         filename = self.file_list[index]
         video_path = os.path.join(self.video_dir, filename)
         video_imgs, original_frames_length = self.read_video(video_path)
-        dst_labels = self.adjust_label(self.label_list[index], original_frames_length, self.num_frames)
-        count = len(self.label_list[index]) / 2
-        if count == 0:
-            print('file:', filename)
-        return video_imgs, dst_labels, count
+        y1, y2, num_period = self.adjust_label(self.label_list[index], original_frames_length, self.num_frames)
+        # count = len(self.label_list[index]) / 2
+        # if count == 0:
+        #     print('file:', filename)
+        # if count - num_period > 0.1:
+        #     print('file:', filename)
+        #     print('y1:', y1)
+        #     print('y2:', y2)
+        #     print('count:', count)
+        #     print('sum_y:', num_period)
+        return video_imgs, y1, y2, num_period
 
     def __len__(self):
         """返回数据集的大小"""
@@ -80,21 +93,22 @@ class MyDataset(Dataset):
             cap = cv2.VideoCapture(video_filename)
             frames = []
             if cap.isOpened():
-                # print(video_filename, 'cap opened')
                 while True:
                     success, frame_bgr = cap.read()
                     if success is False:
                         break
                     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                    # print('cvtColor finished')
                     frame_rgb = cv2.resize(frame_rgb, (width, height))
-                    # print('resize finished')
                     frames.append(frame_rgb)
             cap.release()
-            # print(video_filename, 'resize and cvtColor,cap release finished')
             original_frames_length = len(frames)
+
+            # cap = cv2.VideoCapture(video_filename)
+            # original_frames_length = cap.get(7)
+            # cap.release()
+            # frames = 1
+
             frames = self.adjust_frames(frames)  # [f,w,h,c]
-            # print(video_filename, 'adjust_frames finished')
             frames = np.asarray(frames)  # [f,w,h,c]
             frames = frames.transpose(0, 3, 2, 1)  # [f,c,h,w]
             frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]
@@ -139,9 +153,11 @@ class MyDataset(Dataset):
             new_crop.append(item)
         # new_crop = np.sort(new_crop)
         new_crop = np.asarray(new_crop)
-        new_label = normalize_label(new_crop, num_frames)
-        label_tensor = torch.FloatTensor(new_label)
-        return label_tensor
+        # new_label = normalize_label(new_crop, num_frames)
+        y1, y2, num_period = rep_label(new_crop, num_frames)
+        y1_tensor = torch.LongTensor(y1)
+        y2_tensor = torch.LongTensor(y2)
+        return y1_tensor, y2_tensor, num_period
 
     def isdata(self, file, label):
         video_path = os.path.join(self.video_dir, file)
@@ -161,18 +177,18 @@ class MyDataset(Dataset):
             return False
 
 # data_root = r'/p300/LSP'
-# # # data_root = r'./data/LSP'
+# data_root = r'./data/LSP'
 # label_file = r'train.csv'
-# test = MyDataset(data_root, label_file, 96, 'train')
-# time_list = []
+# # # label_file = r'valid.csv'
+# test = MyDataset(data_root, label_file, 128, 'train')
+# # p_list = []
 # for i in range(len(test)):
-#     start = time.clock()
-#     a,b,c=test[i]
-#     end = time.clock()
-#     if end-start > 3:
-#         time_list.append(i)
-# print(time_list)
-# inx = 0
+#     video_imgs, y1, y2,num_period = test[i]
+#     p_list.append(count - num_period)
+#
+# plt.plot(p_list)
+# plt.show()
+# # inx = 0
 # for imgs, labels ,count in train_loader:
 #
 #     print('{} video :label_shape:{}  mgs.shape:{}  count:{}'.format(inx,labels.shape,imgs.shape,count))
@@ -188,17 +204,3 @@ class MyDataset(Dataset):
 # plt.show()
 # # print(test[1])
 #
-# cap = cv2.VideoCapture('/p300/LSP/train/stu7_48.mp4')
-# frames =[]
-# if cap.isOpened():
-#     while True:
-#         success, frame_bgr = cap.read()
-#         if success is False:
-#             break
-#         frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-#         print('cvtColor finished')
-#         frame_rgb = cv2.resize(frame_rgb, (224, 224))
-#         print('resize finished')
-#         frames.append(frame_rgb)
-# print('resize and cvtColor finished')
-# cap.release()

@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 
 import matplotlib.pyplot as plt
 
-cv2.setNumThreads(0)
+# cv2.setNumThreads(0)
 import time
 
 
@@ -66,25 +66,38 @@ class MyDataset(Dataset):
             ps: if count !=  num_period : return num_period
         """
         filename = self.file_list[index]
-        video_path = os.path.join(self.video_dir, filename)
-        video_imgs, original_frames_length = self.read_video(video_path)
+        npz_name = os.path.splitext(filename)[0] + '.npz'
+        npz_path = os.path.join(self.video_dir, npz_name)
+        video_imgs, original_frames_length = self.read_npz(npz_path)
         y1, y2, num_period = self.adjust_label(self.label_list[index], original_frames_length, self.num_frames)
-        # count = len(self.label_list[index]) / 2
-        # if count == 0:
-        #     print('file:', filename)
-        # if count - num_period > 0.1:
-        #     print('file:', filename)
-        #     print('y1:', y1)
-        #     print('y2:', y2)
-        #     print('count:', count)
-        #     print('sum_y:', num_period)
         return video_imgs, y1, y2, num_period
 
     def __len__(self):
         """返回数据集的大小"""
         return len(self.file_list)
 
-    def read_video(self, video_filename, width=224, height=224):
+    def read_npz(self, npz_path):
+        """
+
+        Args:
+            npz_path: the absolute path to video.npz
+
+        Returns:
+            frames: tensor [f,c,h,w] which has been normalized.
+                    h and w are 224;
+            fps: the original of video.fps
+
+
+        """
+        with np.load(npz_path) as data:
+            frames = data['imgs']
+            fps = data['fps'].item()
+        frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]; h,w is 224
+        frames -= 127.5
+        frames /= 127.5
+        return frames, fps
+
+    def read_video(self, video_filename, filename, width=224, height=224):
         """Read video from file."""
         # print('-------------------------------------')
         # print(video_filename, 'to open')
@@ -107,13 +120,20 @@ class MyDataset(Dataset):
             # original_frames_length = cap.get(7)
             # cap.release()
             # frames = 1
-
             frames = self.adjust_frames(frames)  # [f,w,h,c]
-            frames = np.asarray(frames)  # [f,w,h,c]
+            frames = np.asarray(frames)  # [f,hw,,c]
             frames = frames.transpose(0, 3, 2, 1)  # [f,c,h,w]
+
+            # npy_pth = r'/p300/LSP_npz/npy_data/' + os.path.splitext(filename)[0]
+            # # npy_pth = npy_dir + os.path.splitext(filename)[0]
+            # os.path.splitext(filename)
+            # np.savez(npy_pth, imgs=frames, fps=original_frames_length)  # [f,c,h,w]
+
+            # frames = np.load(frames,dtype=np.uint8) # [f,]ad()
             frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]
             frames -= 127.5
             frames /= 127.5
+
         except:
             print('error:', video_filename)
             raise video_filename
@@ -151,7 +171,6 @@ class MyDataset(Dataset):
         for i in range(len(label)):  # frame_length -> 64
             item = min(math.ceil((float(label[i]) / float(frame_length)) * num_frames), num_frames - 1)
             new_crop.append(item)
-        # new_crop = np.sort(new_crop)
         new_crop = np.asarray(new_crop)
         # new_label = normalize_label(new_crop, num_frames)
         y1, y2, num_period = rep_label(new_crop, num_frames)
@@ -159,28 +178,24 @@ class MyDataset(Dataset):
         y2_tensor = torch.LongTensor(y2)
         return y1_tensor, y2_tensor, num_period
 
-    def isdata(self, file, label):
-        video_path = os.path.join(self.video_dir, file)
-        cap = cv2.VideoCapture(video_path)
-        frames_num = cap.get(7)
-        if label.size == 0:
-            # print('empty data:', file)
-            self.error += 1
-            return False
-        elif frames_num >= max(label):
-            return True
-        else:
-            # print("error data:", file, frames_num)
-            # print('error data:', label)
-            # print("error data:", len(label))
-            self.error += 1
-            return False
 
+data_root = r'./npy_data'
+label_file = 'train.csv'
+test = MyDataset(data_root, label_file, 128, 'train')
+a, b, c, d = test[1]
+# tag = ['train', 'valid', 'test']
+#
 # data_root = r'/p300/LSP'
-# data_root = r'./data/LSP'
-# label_file = r'train.csv'
-# # # label_file = r'valid.csv'
-# test = MyDataset(data_root, label_file, 128, 'train')
+#
+# for _ in range(3):
+#     mod = tag[_]
+#     label_file = mod + '.csv'
+#     test = MyDataset(data_root, label_file, 128, mod)
+#     npy_dir = r'/p300/LSP_npz(128)/' + mod + '/'
+#     for i in range(len(test)):
+#         a, b, c, d = test[i]
+#         print(i, 'saved')
+
 # # p_list = []
 # for i in range(len(test)):
 #     video_imgs, y1, y2,num_period = test[i]
@@ -204,3 +219,4 @@ class MyDataset(Dataset):
 # plt.show()
 # # print(test[1])
 #
+# frames = np.load('',dtype=np.uint8) # [f,]ad()

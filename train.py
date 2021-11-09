@@ -8,15 +8,17 @@ from torch.utils.data import DataLoader
 from dataset import MyDataset
 import os
 import numpy as np
-import torch.optim as optim
+# import torch.optim as optim
 from torch.cuda.amp import autocast, GradScaler
-from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
+# from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
 from tqdm import tqdm
 import platform
 import random
-from torchsummary import summary
-import shutil
-import ipdb
+from data_utils import CudaDataLoader
+
+# from torchsummary import summary
+# import shutil
+# import ipdb
 
 cv2.setNumThreads(0)
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -26,8 +28,8 @@ if platform.system() == 'Windows':
     device_ids = [0]
 
 else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-    device_ids = [0, 1, 2, 3]
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+    device_ids = [0, 1]
     torch.backends.cudnn.benchmark = True
 device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -37,13 +39,15 @@ torch.cuda.manual_seed_all(1)
 np.random.seed(1)
 
 epoch_size = 5000
-FRAME = 128
+FRAME = 10
 BATCH_SIZE = 2
 random.seed(1)
-LR = 6e-6
-W1 = 5
-W2 = 1
-NUM_WORKERS = 32
+LR = 1e-5
+W1 = 1
+W2 = 5
+NUM_WORKERS = 1
+LOG_DIR = './swrnet_log3'
+CKPT_DIR = './checkpoints3'
 
 
 def eval_model(y1, y2, label_count):
@@ -72,10 +76,13 @@ if __name__ == '__main__':
 
     data_dir1 = r'/p300/LSP'
     data_dir2 = r'./data/LSP'
+    data_dir3 = r'/dfs/data/LSP/LSP'
     if os.path.exists(data_dir1):
-        data_root = r'/p300/LSP'
+        data_root = data_dir1
     elif os.path.exists(data_dir2):
-        data_root = r'./data/LSP'
+        data_root = data_dir2
+    elif os.path.exists(data_dir3):
+        data_root = data_dir3
     else:
         raise ValueError('NO data root')
 
@@ -85,9 +92,14 @@ if __name__ == '__main__':
     train_dataset = MyDataset(root_dir=data_root, label_dir=train_label, frames=FRAME, method='train')
     valid_dataset = MyDataset(root_dir=data_root, label_dir=valid_label, frames=FRAME, method='valid')
 
-    train_loader = DataLoader(dataset=train_dataset, pin_memory=True, batch_size=BATCH_SIZE, drop_last=False,
+    train_loader = DataLoader(dataset=train_dataset, pin_memory=True, persistent_workers=True, batch_size=BATCH_SIZE,
+                              drop_last=False,
                               shuffle=True, num_workers=NUM_WORKERS)
-    valid_loader = DataLoader(dataset=valid_dataset, pin_memory=True, batch_size=BATCH_SIZE, drop_last=False,
+    if torch.cuda.is_available():
+        train_loader = CudaDataLoader(train_loader, device=0)
+
+    valid_loader = DataLoader(dataset=valid_dataset, pin_memory=True, persistent_workers=True, batch_size=BATCH_SIZE,
+                              drop_last=False,
                               shuffle=True, num_workers=NUM_WORKERS)
     criterion1 = nn.CrossEntropyLoss()
     criterion2 = nn.BCEWithLogitsLoss()
@@ -107,14 +119,17 @@ if __name__ == '__main__':
 
     # tensorboard
     new_train = False
-    log_dir = './swrnet_log2'
+    log_dir = LOG_DIR
+    if not os.path.exists(log_dir):
+        os.mkdir(log_dir)
+    if not os.path.exists(CKPT_DIR):
+        os.mkdir(CKPT_DIR)
     if new_train is True:
         del_list = os.listdir(log_dir)
         for f in del_list:
             file_path = os.path.join(log_dir, f)
             if os.path.isfile(file_path):
                 os.remove(file_path)
-    log_dir = './swrnet_log2'
     writer = SummaryWriter(log_dir=log_dir)
 
     # lastCkptPath = '/p300/SWRNET/checkpoint/ckpt350_trainMAE_0.8896425843327483.pt'
@@ -167,7 +182,7 @@ if __name__ == '__main__':
             # 向前传播
             with autocast():
 
-                y1, y2 = model(datas)  # output : [b,f,period]
+                y1, y2 = model(datas)  # output : y1 :[b,f,period] y2: [b,f]
                 loss1 = criterion1(y1.transpose(1, 2), target1)
                 loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
@@ -224,7 +239,7 @@ if __name__ == '__main__':
                 loss1 = criterion1(y1.transpose(1, 2), target1)
                 loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
-            MAE, OBO, pre_count = eval_model( y1, y2, count)
+            MAE, OBO, pre_count = eval_model(y1, y2, count)
             count = count.cpu()
             valid_MAE.append(MAE)
             valid_OBO.append(OBO)
@@ -270,7 +285,7 @@ if __name__ == '__main__':
                            epoch)
         # save model weights
         saveCkpt = True
-        ckpt_name = 'ckpt'
+        ckpt_name = '/ckpt'
         if saveCkpt and epoch % 3 == 0:
             checkpoint = {
                 'epoch': epoch,
@@ -284,6 +299,6 @@ if __name__ == '__main__':
                 'valOBO': float(np.mean(valid_OBO)),
             }
             torch.save(checkpoint,
-                       'checkpoint2/' + ckpt_name + str(epoch) + '_trainMAE_' +
-                       str(float(np.mean(train_MAE))) + '.pt')
+                       CKPT_DIR + ckpt_name + str(epoch) + '_trainMAE_' +
+                       str(float(np.around(np.mean(train_MAE), 3))) + '.pt')
     writer.close()

@@ -10,11 +10,12 @@ import os
 import numpy as np
 # import torch.optim as optim
 from torch.cuda.amp import autocast, GradScaler
-# from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
+from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
 from tqdm import tqdm
 import platform
 import random
-from data_utils import CudaDataLoader
+
+from tool import data_utils
 
 # from torchsummary import summary
 # import shutil
@@ -28,8 +29,8 @@ if platform.system() == 'Windows':
     device_ids = [0]
 
 else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
-    device_ids = [0, 1]
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+    device_ids = [0]
     torch.backends.cudnn.benchmark = True
 device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,8 +40,8 @@ torch.cuda.manual_seed_all(1)
 np.random.seed(1)
 
 epoch_size = 5000
-FRAME = 10
-BATCH_SIZE = 2
+FRAME = 64
+BATCH_SIZE = 1
 random.seed(1)
 LR = 1e-5
 W1 = 1
@@ -48,11 +49,15 @@ W2 = 5
 NUM_WORKERS = 1
 LOG_DIR = './swrnet_log3'
 CKPT_DIR = './checkpoints3'
+NPZ = True
 
 
 def eval_model(y1, y2, label_count):
-    y1 = torch.argmax(y1, dim=2)  # [b,f]
-    pre_count = torch.zeros([y1.shape[0]]).cuda()
+    y1 = torch.argmax(y1, dim=2).detach().cpu()  # [b,f]
+    y2 = y2.detach().cpu()
+    # label_count = label_count.cpu()
+    pre_count = torch.zeros([y1.shape[0]]).cpu()
+    label_count = label_count.cpu()
     for _ in range(y1.shape[0]):
         for i in range(y1.shape[1]):
             if y1[_][i] != 0:
@@ -60,25 +65,29 @@ def eval_model(y1, y2, label_count):
 
     gap_abs = abs(pre_count - label_count) / label_count
     MAE = gap_abs.sum() / len(label_count)
-    OBO = float((abs(pre_count - label_count) < 1).sum())
-    # for i in range(len(label_count)):
-    #     if abs(pre_count - label_count)[i] < 1:
-    #         OBO += 1
-    OBO /= float(len(label_count))
-    return float(MAE), OBO, pre_count.cpu().detach().numpy()
+    OBO = float((abs(pre_count - label_count) < 1).sum()) / float(len(label_count))
+
+    return float(MAE), OBO, pre_count.numpy()
 
 
 if __name__ == '__main__':
 
     model = swcp(frame=FRAME)
-    model = torch.nn.DataParallel(model.to(device), device_ids=device_ids)
-    # model = MMDataParallel(model.to(device), device_ids=device_ids)
+    # model = torch.nn.DataParallel(model.to(device), device_ids=device_ids)
+    model = MMDataParallel(model.to(device), device_ids=device_ids)
 
     data_dir1 = r'/p300/LSP'
-    data_dir2 = r'./data/LSP'
+    data_dir2 = r'./data/LSP_npz(64)'
     data_dir3 = r'/dfs/data/LSP/LSP'
     if os.path.exists(data_dir1):
         data_root = data_dir1
+        if NPZ:
+            if FRAME == 64:
+                data_root += '_npz(64)'
+            elif FRAME == 128:
+                data_root += '_npz(128)'
+            else:
+                raise ValueError('without npz with FRAME:', FRAME)
     elif os.path.exists(data_dir2):
         data_root = data_dir2
     elif os.path.exists(data_dir3):
@@ -96,7 +105,7 @@ if __name__ == '__main__':
                               drop_last=False,
                               shuffle=True, num_workers=NUM_WORKERS)
     if torch.cuda.is_available():
-        train_loader = CudaDataLoader(train_loader, device=0)
+        train_loader = data_utils.CudaDataLoader(train_loader, device=0)
 
     valid_loader = DataLoader(dataset=valid_dataset, pin_memory=True, persistent_workers=True, batch_size=BATCH_SIZE,
                               drop_last=False,
@@ -110,12 +119,6 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=LR)
     # optimizer = nn.DataParallel(optimizer, device_ids=device_ids)
     # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10, 30], gamma=0.8)  # three step decay
-    # optimizer = optim.Adam(model.parameters(), lr=1e-5)
-
-    # for state in optimizer.state.values():
-    #     for k, v in state.items():
-    #         if isinstance(v, torch.Tensor):
-    #             state[k] = v.to(device)
 
     # tensorboard
     new_train = False
@@ -144,7 +147,6 @@ if __name__ == '__main__':
         model.load_state_dict(checkpoint['state_dict'], strict=False)
 
         # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
         del checkpoint
     else:
         currEpoch = 0
@@ -176,7 +178,7 @@ if __name__ == '__main__':
             datas = datas.to(device)
             target1 = target1.to(device)  # output: [b,f]
             target2 = target2.to(device)  # output: [b,f]
-            count = count.to(device).reshape([-1, 1])
+            count = count.cpu().reshape([-1, 1])
             optimizer.zero_grad()
 
             # 向前传播
@@ -193,8 +195,7 @@ if __name__ == '__main__':
 
             # 输出结果
             MAE, OBO, pre_count = eval_model(y1, y2, count)
-            count = count.cpu()
-            train_label.append(count[0])
+            train_label.append(count.numpy()[0])
             train_pre.append(pre_count[0])
             train_gap.append(pre_count[0] - count[0])
 
@@ -204,25 +205,27 @@ if __name__ == '__main__':
             avg_loss1.append(float(loss1))
             avg_loss2.append(float(loss2))
 
+            # if batch_idx % 10 == 0:
+            pbar.set_postfix({'Epoch': epoch,
+                              'loss': float(np.mean(avg_loss)),
+                              'Train MAE': float(np.mean(train_MAE)),
+                              'Train OBO': float(np.mean(train_OBO)),
+                              'lr': optimizer.state_dict()['param_groups'][0]['lr']})
             if batch_idx % 10 == 0:
-                pbar.set_postfix({'Epoch': epoch,
-                                  'loss': float(np.mean(avg_loss)),
-                                  'Train MAE': float(np.mean(train_MAE)),
-                                  'Train OBO': float(np.mean(train_OBO)),
-                                  'lr': optimizer.state_dict()['param_groups'][0]['lr']})
-            if batch_idx % 20 == 0:
                 writer.add_scalars('train/batch_pre',
                                    {"pre": float(np.mean(train_pre)), "label": float(np.mean(train_label))},
-                                   epoch * len(train_loader) + batch_idx / 20)
+                                   epoch * len(train_loader) + batch_idx / 10)
                 train_label, train_pre = [], []
                 # writer.add_scalars('train/batch_label', {"MAE": float(MAE)}, epoch * len(train_loader)+ batch_idx)
-            writer.add_scalars('train/batch_MAE', {"MAE": float(MAE)}, epoch * len(train_loader) + batch_idx)
-            writer.add_scalars('train/batch_OBO', {"OBO": float(OBO)}, epoch * len(train_loader) + batch_idx)
-            writer.add_scalars('train/batch_Loss', {"Loss": float(loss)}, epoch * len(train_loader) + batch_idx)
-            writer.add_scalars('train/batch_Loss1', {"Loss1": float(loss1)}, epoch * len(train_loader) + batch_idx)
-            writer.add_scalars('train/batch_Loss2', {"Loss2": float(loss2)}, epoch * len(train_loader) + batch_idx)
+                writer.add_scalars('train/batch_MAE', {"MAE": float(MAE)}, epoch * len(train_loader) + batch_idx / 10)
+                writer.add_scalars('train/batch_OBO', {"OBO": float(OBO)}, epoch * len(train_loader) + batch_idx / 10)
+                writer.add_scalars('train/batch_Loss', {"Loss": float(loss)},
+                                   epoch * len(train_loader) + batch_idx / 10)
+                writer.add_scalars('train/batch_Loss1', {"Loss1": float(loss1)},
+                                   epoch * len(train_loader) + batch_idx / 10)
+                writer.add_scalars('train/batch_Loss2', {"Loss2": float(loss2)},
+                                   epoch * len(train_loader) + batch_idx / 10)
             batch_idx += 1
-            break
         # valid
         pbar = tqdm(valid_loader, total=len(valid_loader))
         # print("********* Validation *********")
@@ -232,7 +235,7 @@ if __name__ == '__main__':
             datas = datas.to(device)
             target1 = target1.to(device)  # output: [b,f]
             target2 = target2.to(device)  # output: [b,f]
-            count = count.to(device).reshape([-1, 1])
+            count = count.cpu().reshape([-1, 1])
             # 向前传播
             with torch.no_grad():
                 y1, y2 = model(datas)  # output : [b,f,period]
@@ -240,13 +243,13 @@ if __name__ == '__main__':
                 loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
             MAE, OBO, pre_count = eval_model(y1, y2, count)
-            count = count.cpu()
+
             valid_MAE.append(MAE)
             valid_OBO.append(OBO)
-
             val_loss.append(float(loss))
             val_loss1.append(float(loss1))
             val_loss2.append(float(loss2))
+
             pbar.set_postfix({'Epoch': epoch,
                               'loss': float(loss),
                               'Valid MAE': MAE,

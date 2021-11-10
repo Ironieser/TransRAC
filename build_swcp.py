@@ -16,7 +16,7 @@ from models.swin_transformer import SwinTransformer
 # from models import build_model
 # from data import build_loader
 # from logger import create_logger
-from utils import load_checkpoint, save_checkpoint, get_grad_norm, auto_resume_helper, reduce_tensor
+# from tool import load_checkpoint, save_checkpoint, get_grad_norm, auto_resume_helper, reduce_tensor
 
 device = torch.device("cuda")
 
@@ -92,7 +92,7 @@ class PositionalEncoding(nn.Module):
         self.pos_encoding.requires_grad = True
 
     def forward(self, x):
-        x = x + self.pos_encoding.cuda()
+        x = x + self.pos_encoding.to(x.device)
         return x
 
 

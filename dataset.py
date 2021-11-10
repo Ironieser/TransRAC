@@ -178,13 +178,13 @@ class MyDataset(Dataset):
         y2_tensor = torch.LongTensor(y2)
         return y1_tensor, y2_tensor, num_period
 
-
-data_root = r'./npy_data'
-label_file = 'train.csv'
-test = MyDataset(data_root, label_file, 128, 'train')
-a, b, c, d = test[1]
-# tag = ['train', 'valid', 'test']
 #
+# data_root = r'./npy_data'
+# label_file = 'train.csv'
+# test = MyDataset(data_root, label_file, 128, 'train')
+# a, b, c, d = test[1]
+# # tag = ['train', 'valid', 'test']
+# #
 # data_root = r'/p300/LSP'
 #
 # for _ in range(3):

@@ -126,7 +126,7 @@ class RepNetPeriodEstimator(nn.Module):
 
         # period prediction module
         self.dropout_layer = nn.Dropout(self.dropout_rate)
-        num_preds = self.num_frames // 2
+        num_preds = self.num_frames
         self.fc_layers = nn.ModuleList()
 
         for channels in self.period_fc_channels:
@@ -157,7 +157,7 @@ class RepNetPeriodEstimator(nn.Module):
                       )
         )
 
-    def forward(self, x: torch.Tensor) -> tuple:
+    def forward(self, x: torch.Tensor, epoch=0) -> tuple:
         """
 
         Args:
@@ -173,9 +173,14 @@ class RepNetPeriodEstimator(nn.Module):
         b = x.shape[0]
         x = torch.reshape(x, [-1, 3, self.image_size, self.image_size])  # => [b*f,3,h,w]
         # Conv feature extractor
+        # if epoch <50:
         with torch.no_grad():
             x = self.base_model(x)  # =>[b*f,1024,h,w]
+        # else:
+        #     with autocast():
+        #         x = self.base_model(x)  # =>[b*f,1024,h,w]
         with autocast():
+            # x = self.base_model(x)  # =>[b*f,1024,h,w]
             x = torch.reshape(x, [b, -1, 1024, 7, 7])  # => [batch_size,  f, 1024 ,h, w]
             c = x.shape[2]
             h = x.shape[3]

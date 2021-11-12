@@ -11,7 +11,7 @@
 /lr_scheduler.py
 /main.py
 /optimizer.py
-/repnet.py
+/build_repnet.py
 /repnet_.ipynb
 /SWE.ipynb
 /t.py

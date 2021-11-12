@@ -12,7 +12,7 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import math
 # from torchsummary import summary
 from models.swin_transformer import SwinTransformer
-
+from torch.cuda.amp import autocast
 # from config import get_config
 # from models import build_model
 # from data import build_loader
@@ -209,35 +209,36 @@ class swcp(nn.Module):
         x = x.view([-1, c, self.image_size, self.image_size])
         with torch.no_grad():
             x = self.sw_1(x)  # output: [b*f,1024]
-        x = x.view([b, -1, 128])  # output: [B, frames, features]
+        with autocast():
+            x = x.view([b, -1, 128])  # output: [B, frames, features]
 
-        # Get self-similarity matrix.
-        x = self.sm(x, x, x)  # output:[B, head, H_frames, W_frames]
-        x = x.transpose(1, 2)  # to output:[B, H_frames, head, W_frames]
-        x = torch.reshape(x, [b, f, -1])  # output: [B, f，head*f] [2,10,4*10]
-        within_period_x = x
+            # Get self-similarity matrix.
+            x = self.sm(x, x, x)  # output:[B, head, H_frames, W_frames]
+            x = x.transpose(1, 2)  # to output:[B, H_frames, head, W_frames]
+            x = torch.reshape(x, [b, f, -1])  # output: [B, f，head*f] [2,10,4*10]
+            within_period_x = x
 
-        # Period prediction.
-        x = self.input_projection(x)  # output: [B, f，512]
-        x = self.pos_encoder(x)  # output:x += [1,f,1]
-        for transformer_layer in self.transformer_layers:
-            x = transformer_layer(x)  # output: [b,f,512]
-        for fc in self.fc_layers:
-            x = self.dropout_layer(x)
-            x = fc(x)
-        # output: [b,f,num_preds]
+            # Period prediction.
+            x = self.input_projection(x)  # output: [B, f，512]
+            x = self.pos_encoder(x)  # output:x += [1,f,1]
+            for transformer_layer in self.transformer_layers:
+                x = transformer_layer(x)  # output: [b,f,512]
+            for fc in self.fc_layers:
+                x = self.dropout_layer(x)
+                x = fc(x)
+            # output: [b,f,num_preds]
 
-        # Within period prediction.
-        within_period_x = self.input_projection2(within_period_x)  # output: [B, f，512]
-        within_period_x = self.pos_encoder2(within_period_x)  # output:x += [1,f,1]
-        for transformer_layer in self.transformer_layers2:
-            within_period_x = transformer_layer(within_period_x)  # output: [b,f,512]
-        for fc in self.within_period_fc_layers:
-            within_period_x = self.dropout_layer(within_period_x)
-            within_period_x = fc(within_period_x)
-        within_period_x = within_period_x.reshape([b, -1])
-        # output: [b,f]
-        return x, within_period_x
+            # Within period prediction.
+            within_period_x = self.input_projection2(within_period_x)  # output: [B, f，512]
+            within_period_x = self.pos_encoder2(within_period_x)  # output:x += [1,f,1]
+            for transformer_layer in self.transformer_layers2:
+                within_period_x = transformer_layer(within_period_x)  # output: [b,f,512]
+            for fc in self.within_period_fc_layers:
+                within_period_x = self.dropout_layer(within_period_x)
+                within_period_x = fc(within_period_x)
+            within_period_x = within_period_x.reshape([b, -1])
+            # output: [b,f]
+            return x, within_period_x
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):

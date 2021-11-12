@@ -15,7 +15,7 @@ from tqdm import tqdm
 import platform
 import random
 
-from tool import data_utils
+# from tool import data_utils
 
 # from torchsummary import summary
 # import shutil
@@ -30,26 +30,27 @@ if platform.system() == 'Windows':
 
 else:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-    device_ids = [0]
+    device_ids = [0, 1]
     torch.backends.cudnn.benchmark = True
 device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# device = torch.device('cpu')
+device = torch.device('cpu')
 torch.manual_seed(1)
 torch.cuda.manual_seed_all(1)
 np.random.seed(1)
 
 epoch_size = 5000
 FRAME = 64
-BATCH_SIZE = 1
+BATCH_SIZE = 2
 random.seed(1)
 LR = 1e-5
-W1 = 1
-W2 = 5
-NUM_WORKERS = 1
-LOG_DIR = './swrnet_log3'
-CKPT_DIR = './checkpoints3'
+W1 = 5
+W2 = 1
+NUM_WORKERS = 0
+LOG_DIR = './swrc_log1111_3'
+CKPT_DIR = './checkpoints5'
 NPZ = True
+P = 0.2
 
 
 def eval_model(y1, y2, label_count):
@@ -144,7 +145,7 @@ if __name__ == '__main__':
 
     model = swcp(frame=FRAME)
     # model = torch.nn.DataParallel(model.to(device), device_ids=device_ids)
-    model = MMDataParallel(model.to(device), device_ids=device_ids)
+    # model = MMDataParallel(model.to(device), device_ids=device_ids)
 
     data_dir1 = r'/p300/LSP'
     data_dir2 = r'./data/LSP_npz(64)'
@@ -171,13 +172,13 @@ if __name__ == '__main__':
     train_dataset = MyDataset(root_dir=data_root, label_dir=train_label, frames=FRAME, method='train')
     valid_dataset = MyDataset(root_dir=data_root, label_dir=valid_label, frames=FRAME, method='valid')
 
-    train_loader = DataLoader(dataset=train_dataset, pin_memory=True, persistent_workers=True, batch_size=BATCH_SIZE,
+    train_loader = DataLoader(dataset=train_dataset, pin_memory=True, batch_size=BATCH_SIZE,
                               drop_last=False,
                               shuffle=True, num_workers=NUM_WORKERS)
-    if torch.cuda.is_available():
-        train_loader = data_utils.CudaDataLoader(train_loader, device=0)
+    # if torch.cuda.is_available():
+    #     train_loader = data_utils.CudaDataLoader(train_loader, device=0)
 
-    valid_loader = DataLoader(dataset=valid_dataset, pin_memory=True, persistent_workers=True, batch_size=BATCH_SIZE,
+    valid_loader = DataLoader(dataset=valid_dataset, pin_memory=True, batch_size=BATCH_SIZE,
                               drop_last=False,
                               shuffle=True, num_workers=NUM_WORKERS)
     criterion1 = nn.CrossEntropyLoss()
@@ -206,7 +207,7 @@ if __name__ == '__main__':
     writer = SummaryWriter(log_dir=log_dir)
 
     # lastCkptPath = '/p300/SWRNET/checkpoint/ckpt350_trainMAE_0.8896425843327483.pt'
-    # lastCkptPath = '/p300/SWRNET/checkpoint2/ckpt15_trainMAE_1.498641728136049.pt'
+    # lastCkptPath = '/p300/SWRNET/checkpoints5/ckpt9_trainMAE_0.663.pt'
     lastCkptPath = None
     if lastCkptPath is not None:
         print("loading checkpoint")
@@ -259,9 +260,9 @@ if __name__ == '__main__':
                 loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
             # 反向传播 scaler 放大梯度
-            scaler.scale(loss.float()).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # scaler.scale(loss.float()).backward()
+            # scaler.step(optimizer)
+            # scaler.update()
 
             # 输出结果
             MAE, OBO, pre_count = eval_model(y1, y2, count)

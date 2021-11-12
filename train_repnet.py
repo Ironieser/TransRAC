@@ -15,6 +15,7 @@ from tqdm import tqdm
 import platform
 import random
 from torchvision.transforms import ToPILImage
+from torchvision.utils import make_grid
 
 # from tool import data_utils
 
@@ -28,30 +29,44 @@ cv2.setNumThreads(0)
 if platform.system() == 'Windows':
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     device_ids = [0]
-
+    device = torch.device('cpu')
 else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-    device_ids = [0, 1]
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
+    device_ids = [1, 2, 3, 4, 5, 6, 7]
     torch.backends.cudnn.benchmark = True
-device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device('cpu')
+    device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
+
 torch.manual_seed(1)
 torch.cuda.manual_seed_all(1)
 np.random.seed(1)
 
 epoch_size = 5000
 FRAME = 64
-BATCH_SIZE = 2
+BATCH_SIZE = 14
 random.seed(1)
 LR = 1e-5
 W1 = 1
 W2 = 20
-NUM_WORKERS = 0
-LOG_DIR = './swrc_log1111_3'
-CKPT_DIR = './checkpoints5'
+NUM_WORKERS = 24
+LOG_DIR = './repnet_log1112_2'
+CKPT_DIR = './ckp_repnet_2'
 NPZ = True
 P = 0.2
+lastCkptPath = None
+
+if platform.system() == 'Windows':
+    NUM_WORKERS = 0
+
+
+def get_loss_weight(l1, l2):
+    k = l1 / l2
+    if k > 1:
+        w1 = 1
+        w2 = int(k)
+    else:
+        w1 = int(1 / k)
+        w2 = 1
+    return w1, w2
 
 
 def eval_model(y1, y2, label_count):
@@ -132,7 +147,7 @@ def eval_model(y1, y2, label_count):
     label_count = label_count.cpu().view(-1)
     for _ in range(y1.shape[0]):
         for i in range(y1.shape[1]):
-            if y1[_][i] != 0 and y2[_][i] > P:
+            if y1[_][i] >= 1 and y2[_][i] > P:
                 pre_count[_] += 1 / y1[_][i]
 
     gap_abs = abs((pre_count - label_count) / label_count)
@@ -154,8 +169,10 @@ if __name__ == '__main__':
 
     model = RepNetPeriodEstimator()
     # model = torch.nn.DataParallel(model.to(device), device_ids=device_ids)
-    # model = MMDataParallel(model.to(device), device_ids=device_ids)
-
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        model = MMDataParallel(model, device_ids=device_ids)
+    model.to(device)
     data_dir1 = r'/p300/LSP'
     data_dir2 = r'./data/LSP_npz(64)'
     data_dir3 = r'/dfs/data/LSP/LSP'
@@ -182,23 +199,12 @@ if __name__ == '__main__':
     valid_dataset = MyDataset(root_dir=data_root, label_dir=valid_label, frames=FRAME, method='valid')
 
     train_loader = DataLoader(dataset=train_dataset, pin_memory=True, batch_size=BATCH_SIZE,
-                              drop_last=False,
-                              shuffle=True, num_workers=NUM_WORKERS)
+                              drop_last=False, shuffle=True, num_workers=NUM_WORKERS)
     # if torch.cuda.is_available():
     #     train_loader = data_utils.CudaDataLoader(train_loader, device=0)
 
     valid_loader = DataLoader(dataset=valid_dataset, pin_memory=True, batch_size=BATCH_SIZE,
-                              drop_last=False,
-                              shuffle=True, num_workers=NUM_WORKERS)
-    criterion1 = nn.CrossEntropyLoss()
-    criterion2 = nn.BCEWithLogitsLoss()
-    w1 = W1
-    w2 = W2
-    scaler = GradScaler()
-    # optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    # optimizer = nn.DataParallel(optimizer, device_ids=device_ids)
-    # scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10, 30], gamma=0.8)  # three step decay
+                              drop_last=False, shuffle=True, num_workers=NUM_WORKERS)
 
     # tensorboard
     new_train = False
@@ -217,7 +223,7 @@ if __name__ == '__main__':
 
     # lastCkptPath = '/p300/SWRNET/checkpoint/ckpt350_trainMAE_0.8896425843327483.pt'
     # lastCkptPath = '/p300/SWRNET/checkpoints5/ckpt9_trainMAE_0.663.pt'
-    lastCkptPath = None
+
     if lastCkptPath is not None:
         print("loading checkpoint")
         checkpoint = torch.load(lastCkptPath)
@@ -230,17 +236,24 @@ if __name__ == '__main__':
         del checkpoint
     else:
         currEpoch = 0
-
+    criterion1 = nn.CrossEntropyLoss()
+    criterion2 = nn.BCEWithLogitsLoss()
+    scaler = GradScaler()
+    optimizer = torch.optim.Adam([{'params': model.parameters(), 'initial_lr': 1e-5}], lr=LR)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98, last_epoch=currEpoch)
     # print("********* Training begin *********")
     ep_pbar = tqdm(range(currEpoch, epoch_size))
+    train_step = 0
+    valid_step = 0
     for epoch in ep_pbar:
         # save evaluation metrics
-        train_MAE, train_OBO, valid_MAE, valid_OBO, avg_loss, avg_loss1, avg_loss2 = [], [], [], [], [], [], []
-        val_loss1, val_loss2, val_loss = [], [], []
+        train_MAE, train_OBO, valid_MAE, valid_OBO, train_loss, train_loss1, train_loss2 = [], [], [], [], [], [], []
+        valid_loss1, valid_loss2, valid_loss = [], [], []
         train_pre, train_label, train_gap = [], [], []
         pbar = tqdm(train_loader, total=len(train_loader))
         batch_idx = 0
         model.train()
+        train_step = 0
         for datas, target1, target2, count in pbar:
             # ipdb.set_trace()
 
@@ -252,15 +265,18 @@ if __name__ == '__main__':
 
             # 向前传播
             with autocast():
-
-                y1, y2, embedding_code, sim_matrix = model(datas)  # output : y1 :[b,f,period] y2: [b,f]
-                loss1 = criterion1(y1.transpose(1, 2), target1)
+                y1, y2, embedding_code, sim_matrix = model(
+                    datas, epoch)  # output : y1 :[b,f,period] y2: [b,f] sim_matrix:[b,1,f,f]
+                loss1 = criterion1(y1.transpose(1, 2), target1)  # y = [b,c,d1,d2,d2,d3,...], target: [b,d1,d2,d3]
                 loss2 = criterion2(y2, target2.float())
+                w1, w2 = get_loss_weight(loss1, loss2)
                 loss = w1 * loss1 + w2 * loss2
+
             # 反向传播 scaler 放大梯度
-            # scaler.scale(loss.float()).backward()
-            # scaler.step(optimizer)
-            # scaler.update()
+            if platform.system() != 'Windows':
+                scaler.scale(loss.float()).backward()
+                scaler.step(optimizer)
+                scaler.update()
 
             # 输出结果
             MAE, OBO, pre_count = eval_model(y1, y2, count)
@@ -270,30 +286,36 @@ if __name__ == '__main__':
 
             train_MAE.append(MAE)
             train_OBO.append(OBO)
-            avg_loss.append(float(loss))
-            avg_loss1.append(float(loss1))
-            avg_loss2.append(float(loss2))
+            train_loss.append(float(loss))
+            train_loss1.append(float(w1 * loss1))
+            train_loss2.append(float(w2 * loss2))
 
             # if batch_idx % 10 == 0:
             pbar.set_postfix({'Epoch': epoch,
-                              'loss': float(np.mean(avg_loss)),
+                              'loss': float(np.mean(train_loss)),
                               'Train MAE': float(np.mean(train_MAE)),
                               'Train OBO': float(np.mean(train_OBO)),
                               'lr': optimizer.state_dict()['param_groups'][0]['lr']})
-            if batch_idx % 10 == 0:
+            k_batch = int(len(train_loader) / 10)
+            if batch_idx % k_batch == 0 and batch_idx != 0:
+                b_loss = np.mean(train_loss[batch_idx - k_batch:batch_idx])
+                b_loss1 = np.mean(train_loss1[batch_idx - k_batch:batch_idx])
+                b_loss2 = np.mean(train_loss2[batch_idx - k_batch:batch_idx])
+                b_MAE = np.mean(train_MAE[batch_idx - k_batch:batch_idx])
+                b_OBO = np.mean(train_OBO[batch_idx - k_batch:batch_idx])
+                writer.add_image('sim_matrix',
+                                 make_grid(sim_matrix.detach().cpu(), nrow=3, padding=20,
+                                           normalize=True, pad_value=1), train_step)
                 writer.add_scalars('train/batch_pre',
                                    {"pre": float(np.mean(train_pre)), "label": float(np.mean(train_label))},
-                                   epoch * len(train_loader) + batch_idx / 10)
+                                   train_step)
                 train_label, train_pre = [], []
-                # writer.add_scalars('train/batch_label', {"MAE": float(MAE)}, epoch * len(train_loader)+ batch_idx)
-                writer.add_scalars('train/batch_MAE', {"MAE": float(MAE)}, epoch * len(train_loader) + batch_idx / 10)
-                writer.add_scalars('train/batch_OBO', {"OBO": float(OBO)}, epoch * len(train_loader) + batch_idx / 10)
-                writer.add_scalars('train/batch_Loss', {"Loss": float(loss)},
-                                   epoch * len(train_loader) + batch_idx / 10)
-                writer.add_scalars('train/batch_Loss1', {"Loss1": float(loss1)},
-                                   epoch * len(train_loader) + batch_idx / 10)
-                writer.add_scalars('train/batch_Loss2', {"Loss2": float(loss2)},
-                                   epoch * len(train_loader) + batch_idx / 10)
+                writer.add_scalars('train/batch_MAE', {"MAE": float(b_MAE)}, train_step)
+                writer.add_scalars('train/batch_OBO', {"OBO": float(b_OBO)}, train_step)
+                writer.add_scalars('train/batch_Loss', {"Loss": float(b_loss)}, train_step)
+                writer.add_scalars('train/batch_Loss1', {"Loss1": float(w1 * b_loss1)}, train_step)
+                writer.add_scalars('train/batch_Loss2', {"Loss2": float(w2 * b_loss2)}, train_step)
+                train_step += 1
             batch_idx += 1
         # valid
         pbar = tqdm(valid_loader, total=len(valid_loader))
@@ -315,47 +337,67 @@ if __name__ == '__main__':
 
             valid_MAE.append(MAE)
             valid_OBO.append(OBO)
-            val_loss.append(float(loss))
-            val_loss1.append(float(loss1))
-            val_loss2.append(float(loss2))
+            valid_loss.append(float(loss))
+            valid_loss1.append(float(w1 * loss1))
+            valid_loss2.append(float(w1 * loss2))
 
             pbar.set_postfix({'Epoch': epoch,
-                              'loss': float(loss),
-                              'Valid MAE': np.mean(valid_MAE),
-                              'Valid OBO': np.mean(valid_OBO)}
+                              'loss': float(np.mean(valid_loss)),
+                              'Valid MAE': float(np.mean(valid_MAE)),
+                              'Valid OBO': float(np.mean(valid_OBO))}
                              )
-            writer.add_scalars('valid/batch_MAE', {"MAE": float(MAE)}, epoch * len(valid_loader) + batch_idx)
-            writer.add_scalars('valid/batch_OBO', {"OBO": float(OBO)}, epoch * len(valid_loader) + batch_idx)
-            writer.add_scalars('valid/batch_Loss', {"Loss": float(loss)}, epoch * len(valid_loader) + batch_idx)
-            writer.add_scalars('valid/batch_Loss1', {"Loss1": float(loss1)}, epoch * len(valid_loader) + batch_idx)
-            writer.add_scalars('valid/batch_Loss2', {"Loss2": float(loss2)}, epoch * len(valid_loader) + batch_idx)
 
+            k_batch = int(len(valid_loader) / 5)
+            if k_batch <= 0:
+                k_batch = 1
+            if batch_idx % k_batch == 0 and batch_idx != 0:
+                b_loss = np.mean(valid_loss[batch_idx - k_batch:batch_idx])
+                b_loss1 = np.mean(valid_loss1[batch_idx - k_batch:batch_idx])
+                b_loss2 = np.mean(valid_loss2[batch_idx - k_batch:batch_idx])
+                b_MAE = np.mean(valid_MAE[batch_idx - k_batch:batch_idx])
+                b_OBO = np.mean(valid_OBO[batch_idx - k_batch:batch_idx])
+
+                writer.add_scalars('valid/batch_MAE', {"MAE": float(b_MAE)}, valid_step)
+                writer.add_scalars('valid/batch_OBO', {"OBO": float(b_OBO)}, valid_step)
+                writer.add_scalars('valid/batch_Loss', {"Loss": float(b_loss)}, valid_step)
+                writer.add_scalars('valid/batch_Loss1', {"Loss1": float(w1 * b_loss1)}, valid_step)
+                writer.add_scalars('valid/batch_Loss2', {"Loss2": float(w2 * b_loss2)}, valid_step)
+                train_step += 1
             batch_idx += 1
 
-        # one epoch train and valid over
+        # per epoch of train and valid over
+        scheduler.step()
         ep_pbar.set_postfix({'Epoch': epoch,
-                             'loss': float(np.mean(avg_loss)),
-                             'Tr_MAE': np.mean(train_MAE),
-                             'Tr_OBO': np.mean(train_OBO),
-                             'ValMAE': np.mean(valid_MAE),
-                             'ValOBO': np.mean(valid_OBO)})
+                             'loss': float(np.mean(train_loss)),
+                             'Tr_MAE': float(np.mean(train_MAE)),
+                             'Tr_OBO': float(np.mean(train_OBO)),
+                             'ValMAE': float(np.mean(valid_MAE)),
+                             'ValOBO': float(np.mean(valid_OBO))})
 
-        # tensorboardX
-        writer.add_scalars('train/MAE', {"MAE": float(np.mean(train_MAE))}, epoch)
-        writer.add_scalars('train/OBO', {"OBO": float(np.mean(train_OBO))}, epoch)
-        writer.add_scalars('train/Loss', {"Loss": float(np.mean(avg_loss))}, epoch)
-        writer.add_scalars('train/Loss1', {"Loss1": float(np.mean(avg_loss1))}, epoch)
-        writer.add_scalars('train/Loss2', {"Loss2": float(np.mean(avg_loss2))}, epoch)
-
-        writer.add_scalars('valid/MAE', {"MAE": float(np.mean(valid_MAE))}, epoch)
-        writer.add_scalars('valid/OBO', {"OBO": float(np.mean(valid_OBO))}, epoch)
-        writer.add_scalars('valid/Loss', {"MSELoss": float(np.mean(val_loss))}, epoch),
-        writer.add_scalars('valid/Loss1', {"MSELoss": float(np.mean(val_loss1))}, epoch),
-        writer.add_scalars('valid/Loss2', {"MSELoss": float(np.mean(val_loss2))}, epoch),
-
+        # tensorboardX  per epoch
+        writer.add_scalars('train/MAE',
+                           {"train_MAE": float(np.mean(train_MAE)), "valid_MAE": float(np.mean(valid_MAE))},
+                           epoch)
+        writer.add_scalars('train/OBO',
+                           {"train_OBO": float(np.mean(train_OBO)), "valid_OBO": float(np.mean(valid_OBO))}, epoch)
+        writer.add_scalars('train/Loss',
+                           {"train_Loss": float(np.mean(train_loss)), "valid_Loss": float(np.mean(valid_loss))}, epoch)
+        writer.add_scalars('train/Loss1',
+                           {"train_Loss1": float(np.mean(train_loss1)), "valid_Loss1": float(np.mean(valid_loss1))},
+                           epoch)
+        writer.add_scalars('train/Loss2',
+                           {"train_Loss2": float(np.mean(train_loss2)), "valid_Loss2": float(np.mean(valid_loss2))},
+                           epoch)
         writer.add_scalars('train/learning rate', {"learning rate": optimizer.state_dict()['param_groups'][0]['lr']},
                            epoch)
+        # writer.add_scalars('valid/MAE', {"MAE": float(np.mean(valid_MAE))}, epoch)
+        # writer.add_scalars('valid/OBO', {"OBO": float(np.mean(valid_OBO))}, epoch)
+        # writer.add_scalars('valid/Loss', {"MSELoss": float(np.mean(val_loss))}, epoch),
+        # writer.add_scalars('valid/Loss1', {"MSELoss": float(np.mean(val_loss1))}, epoch),
+        # writer.add_scalars('valid/Loss2', {"MSELoss": float(np.mean(val_loss2))}, epoch),
+
         # save model weights
+
         saveCkpt = True
         ckpt_name = '/ckpt'
         if saveCkpt and epoch % 3 == 0:
@@ -363,10 +405,10 @@ if __name__ == '__main__':
                 'epoch': epoch,
                 'state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'trainLoss': float(np.mean(avg_loss)),
+                'trainLoss': float(np.mean(train_loss)),
                 'trainMAE': float(np.mean(train_MAE)),
                 'trainOBO': float(np.mean(train_OBO)),
-                'valLoss': float(np.mean(val_loss)),
+                'valLoss': float(np.mean(valid_loss)),
                 'valMAE': float(np.mean(valid_MAE)),
                 'valOBO': float(np.mean(valid_OBO)),
             }

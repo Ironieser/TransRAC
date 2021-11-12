@@ -12,6 +12,7 @@ from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import math
 # from torchsummary import summary
 from models.swin_transformer import SwinTransformer
+
 # from config import get_config
 # from models import build_model
 # from data import build_loader
@@ -48,13 +49,13 @@ class attention(nn.Module):
 
 class Similarity_matrix(nn.Module):
 
-    def __init__(self, num_heads=8, model_dim=512):
+    def __init__(self, num_heads=8, model_dim=512, input_size=512):
         super().__init__()
 
         # self.dim_per_head = model_dim // num_heads
         self.num_heads = num_heads
         self.model_dim = model_dim
-        self.input_size = 128
+        self.input_size = input_size
         self.linear_q = nn.Linear(self.input_size, model_dim)
         self.linear_k = nn.Linear(self.input_size, model_dim)
         self.linear_v = nn.Linear(self.input_size, model_dim)
@@ -123,8 +124,23 @@ class swcp(nn.Module):
         # self.density_fc_channels = density_fc_channels
         self.period_fc_channels = period_fc_channels
         self.within_period_fc_channels = within_period_fc_channels
-        self.sw_1 = SwinTransformer()  # output (128,)
-        self.sm = Similarity_matrix(num_heads=self.num_heads)
+        self.sw_1 = SwinTransformer()  # output (1024,)
+
+        # # temporal conv layers
+        # self.temporal_conv_layers = nn.Conv3d(in_channels=1024,
+        #                                       out_channels=512,
+        #                                       kernel_size=3,
+        #                                       padding=(3, 1, 1),
+        #                                       dilation=(3, 1, 1))
+        #
+        # self.temporal_bn_layers = [nn.BatchNorm3d(num_features=512) for _ in self.temporal_conv_layers]
+        #
+        # self.conv_3x3_layer = nn.Conv2d(in_channels=1,
+        #                                 out_channels=self.conv_channels,
+        #                                 kernel_size=self.conv_kernel_size,
+        #                                 padding=1)
+        #
+        self.sm = Similarity_matrix(num_heads=self.num_heads, input_size=128)
 
         # Transformer config in form of (channels, heads, bottleneck channels).
         self.transformer_layers_config = transformer_layers_config
@@ -192,7 +208,7 @@ class swcp(nn.Module):
         # Swin_T Feature Extractor per frame
         x = x.view([-1, c, self.image_size, self.image_size])
         with torch.no_grad():
-            x = self.sw_1(x)  # output: [b*f,128]
+            x = self.sw_1(x)  # output: [b*f,1024]
         x = x.view([b, -1, 128])  # output: [B, frames, features]
 
         # Get self-similarity matrix.
@@ -219,7 +235,7 @@ class swcp(nn.Module):
         for fc in self.within_period_fc_layers:
             within_period_x = self.dropout_layer(within_period_x)
             within_period_x = fc(within_period_x)
-        within_period_x = within_period_x.reshape([b,-1])
+        within_period_x = within_period_x.reshape([b, -1])
         # output: [b,f]
         return x, within_period_x
 

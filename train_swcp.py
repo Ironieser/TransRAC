@@ -53,19 +53,74 @@ NPZ = True
 
 
 def eval_model(y1, y2, label_count):
+    """
+
+    Args:
+        y1: per frame period length, shape = tensor:[b,f,max_period] . e.g. [4,64,32]
+        y2: per frame within period, shape = tensor:[b,f]. e.g.[4,64]
+        label_count: the count of grand truth which was built by label2rep.py
+
+    Returns:
+        MAE: the MAE of one batch.
+        OBO: the OBO of one batch.
+        pre_count: the count of per video, shape = np:[b]
+
+        e.g.
+        y1.shape = [2,64,32]
+        y2.shape = [2,64]
+        then  by y1 = torch.argmax(y1, dim=2)
+           y1: tensor([[31, 37, 38, 40, 62, 14, 62, 53, 45, 13, 35, 32, 16,  6, 38, 49, 35, 42,
+                     54, 30, 52, 57, 38, 16, 35, 14, 46, 63, 37, 53, 62, 62, 55, 32, 16,  9,
+                     32, 13, 52, 12,  0, 59, 51, 41, 57, 39, 34, 15, 54, 62, 34, 43, 60, 62,
+                     14, 32, 14, 54, 45, 58, 52,  3, 62, 25],
+                    [62, 54,  4,  7, 22,  7, 18, 62, 28, 26, 52, 62, 52, 32, 60, 59, 28, 28,
+                      5, 52, 54, 25, 45,  3, 54,  7, 53, 13, 16, 33, 14, 11, 57, 39, 15,  9,
+                     62, 53, 37, 23, 45, 57, 14, 62, 34, 53, 28, 44, 52, 36, 62, 55,  2,  5,
+                     38, 62, 16, 19, 32, 53, 38, 37, 32, 37]])
+           y2: tensor([[-1.9085e-02, -1.1825e-01,  5.3301e-01, -2.2395e-01,  9.3441e-02,
+                      3.3679e-01,  9.3310e-02,  1.8909e-01,  2.8656e-01,  3.7536e-01,
+                      2.5514e-02,  5.0600e-03,  2.0166e-01, -9.5531e-02, -1.0591e-01,
+                     -5.8728e-01,  9.5945e-02, -3.7965e-02, -6.1789e-02, -1.4481e-01,
+                      2.6248e-01,  3.1214e-02,  1.1477e-01, -4.2951e-02, -1.9043e-01,
+                      4.0703e-01, -4.9590e-02, -5.6835e-02, -4.4173e-01,  3.7733e-01,
+                      4.4231e-01,  2.4140e-01,  1.5698e-01,  1.6453e-01, -2.1800e-01,
+                     -1.2975e-02, -1.3237e-01,  1.4669e-01, -5.6803e-02,  1.8498e-01,
+                      1.4089e-01, -1.2717e-03,  4.7374e-01,  3.1298e-02,  7.5854e-02,
+                      1.2213e-02, -1.2622e-01, -2.2001e-01, -1.6361e-01, -1.1558e-01,
+                     -1.6277e-02,  1.0667e-01,  3.0014e-01, -5.8727e-01,  3.1545e-02,
+                     -2.9533e-01,  4.8003e-01,  1.4045e-01,  3.9375e-01, -8.2327e-02,
+                     -2.3117e-01,  1.5900e-01,  3.4784e-03,  2.4025e-01],
+                    [-1.2943e-01,  3.1282e-01, -5.8563e-02,  2.0546e-01,  1.9258e-01,
+                     -1.6292e-03,  3.6191e-02,  1.8655e-01,  1.8982e-01,  1.7922e-01,
+                      3.4486e-01, -1.1937e-01,  2.3351e-01,  5.1337e-02, -9.6292e-02,
+                      1.5240e-01,  4.6470e-01,  1.5024e-03, -1.0442e-01,  3.4582e-02,
+                      9.0641e-02,  1.7103e-01, -1.2973e-01,  4.2786e-01,  1.9274e-01,
+                      2.1767e-01,  3.7242e-01,  6.5135e-02, -3.6086e-01,  1.7195e-01,
+                      5.7926e-01,  4.0312e-01, -2.1481e-03, -1.4346e-01, -1.5655e-02,
+                      4.6510e-01,  3.0693e-04,  2.0094e-02, -9.0856e-02, -7.1425e-02,
+                      4.4809e-02, -1.7435e-01,  4.1627e-01,  2.1307e-01, -1.9213e-01,
+                      2.7987e-02,  2.8832e-01,  2.1462e-01,  5.2479e-02,  8.8549e-02,
+                      2.0141e-01, -9.0030e-02,  6.5863e-02,  2.0524e-02, -1.0676e-01,
+                      6.5326e-02,  5.2676e-01,  4.0676e-01,  1.5199e-01,  2.2177e-01,
+                     -5.9902e-02,  1.0546e-01, -1.3028e-01,  4.5258e-02]])
+            so :
+                pre_count = tensor([0., 0.])
+                label_count = tensor([ 6.0000, 23.0000], dtype=torch.float64)
+            then adjust the data type and return.
+
+    """
     y1 = torch.argmax(y1, dim=2).detach().cpu()  # [b,f]
     y2 = y2.detach().cpu()
-    # label_count = label_count.cpu()
     pre_count = torch.zeros([y1.shape[0]]).cpu()
-    label_count = label_count.cpu()
+    label_count = label_count.cpu().view(-1)
     for _ in range(y1.shape[0]):
         for i in range(y1.shape[1]):
-            if y1[_][i] != 0:
-                pre_count[_] += y2[_][i] / y1[_][i]
+            if y1[_][i] != 0 and y2[_][i] > P:
+                pre_count[_] += 1 / y1[_][i]
 
-    gap_abs = abs(pre_count - label_count) / label_count
+    gap_abs = abs((pre_count - label_count) / label_count)
     MAE = gap_abs.sum() / len(label_count)
-    OBO = float((abs(pre_count - label_count) < 1).sum()) / float(len(label_count))
+    OBO = float((abs(pre_count - label_count) < 1).sum() / len(label_count))
 
     return float(MAE), OBO, pre_count.numpy()
 
@@ -252,9 +307,9 @@ if __name__ == '__main__':
 
             pbar.set_postfix({'Epoch': epoch,
                               'loss': float(loss),
-                              'Valid MAE': MAE,
-                              'Valid OBO': OBO})
-
+                              'Valid MAE': np.mean(valid_MAE),
+                              'Valid OBO': np.mean(valid_OBO)}
+                             )
             writer.add_scalars('valid/batch_MAE', {"MAE": float(MAE)}, epoch * len(valid_loader) + batch_idx)
             writer.add_scalars('valid/batch_OBO', {"OBO": float(OBO)}, epoch * len(valid_loader) + batch_idx)
             writer.add_scalars('valid/batch_Loss', {"Loss": float(loss)}, epoch * len(valid_loader) + batch_idx)

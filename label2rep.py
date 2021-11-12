@@ -2,19 +2,30 @@ import math
 import numpy as np
 
 
-def rep_label(y_frame, y_length):
+def rep_label(y_frame, y_length=64):
     """
 
     Args:
-        y_frame: [2,5,5,8,9,12]  -> [2,4] [5,8],[9,11]
-        e.g.
-            if [2,3,3,8] => [2,2],[3,8]
-            if [2,2,2,3] => [2,2],[3,3]
-            else [2,2,2,2] => [2,2]
-        y_length: 总帧数
+        y_frame: the label by adjusting the frequency from original to NUM_FRAME.
+        y_length: NUM_FRAME  e.g. 64
     Returns:
-        y1: 0 - y_length
-        y2: 0 - 1
+        y1: period length  0 - max period
+        y2: within period  0 - 1
+        period : count by processing labels:(y2/y1)[~np.isnan(y2/y1).bool()].sum()
+        e.g.
+            some examples of adjust label Algorithm:
+                if [2,3,3,8] => [2,2],[3,8]
+                if [2,2,2,3] => [2,2],[3,3]
+                else [2,2,2,2] => [2,2]
+                So [2,5,5,8,9,12]  -> [2,4] [5,8],[9,11]
+                then to get new grand truth.
+            for input y_frame and y_length example:
+                y_frame:[2,5,5,8,9,12]
+                y_length: 16
+                y1 = [0. 0. 3. 3. 3. 4. 4. 4. 4. 4. 4. 4. 4. 0. 0. 0.]
+                y2 = [0. 0. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 1. 0. 0. 0.]
+
+
     """
     y1 = np.zeros(y_length, dtype=float)  # 坐标轴长度，即帧数
     y2 = np.zeros(y_length, dtype=float)
@@ -40,13 +51,13 @@ def rep_label(y_frame, y_length):
             period += y2[i] / y1[i]
     return y1, y2, period
 
-# # # # # test
-# y_frame = np.array([4, 50])  # 关键帧
-# # # # # # y_frame = np.array([1067, 3303, 3303, 15, 15, 22, 25, 40])  # 关键帧
-# y1, y2 , c = rep_label(y_frame, 64)
-# # import torch
-#
-# y1_tensor = torch.FloatTensor(y1)
+# # # # # # test
+# y_frame = np.array([2, 5, 5, 8, 9, 12])  # 关键帧
+# # # # # # # y_frame = np.array([1067, 3303, 3303, 15, 15, 22, 25, 40])  # 关键帧
+# y1, y2, c = rep_label(y_frame, 16)
+# # # import torch
+# #
+# # y1_tensor = torch.FloatTensor(y1)
 # y2_tensor = torch.FloatTensor(y2)
 
 # # print(y)

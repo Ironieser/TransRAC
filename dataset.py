@@ -44,6 +44,7 @@ class MyDataset(Dataset):
         self.num_frames = frames  # model frames
         self.num_period = 64
         self.error = 0
+        self.image_size = 224
         df = pd.read_csv(self.label_filename)
         for i in range(0, len(df)):
             filename = df.loc[i, 'name']
@@ -52,6 +53,11 @@ class MyDataset(Dataset):
             # if self.isdata(filename, label_tmp):  # data is right format ,save in list
             self.file_list.append(filename)
             self.label_list.append(label_tmp)
+        # to save data in ram
+        self.file_imgs_np = np.zeros([len(self.file_list), self.num_frames, 3, self.image_size, self.image_size])
+        # self.file_imgs_np = np.zeros([4, self.num_frames, 3, self.image_size, self.image_size])
+        self.file_fps_np = np.zeros([len(self.file_list)])
+        self.memory_tag = np.full(len(self.file_list), False)
 
     def __getitem__(self, index):
         """
@@ -60,16 +66,17 @@ class MyDataset(Dataset):
             index:
 
         Returns:
-            video_imgs: loaded video to imgs
-            y1: period length  0 - max period
-            y2: within period  0 - 1
-            num_period : count by processing labels:(y2/y1)[~np.isnan(y2/y1).bool()].sum()
+            video_imgs: loaded video to imgs    :FloatTensor    [1,64,3,224,224]
+            y1: period length  0 - max period   :LongTensor     [1,64,64]
+            y2: within period  0 - 1            :LongTensor     [1,64]
+            num_period : count by processing labels:(y2/y1)[~np.isnan(y2/y1).bool()].sum() : ndarray [1]
             ps: if count !=  num_period : return num_period
         """
+
         filename = self.file_list[index]
         npz_name = os.path.splitext(filename)[0] + '.npz'
         npz_path = os.path.join(self.video_dir, npz_name)
-        video_imgs, original_frames_length = self.read_npz(npz_path)
+        video_imgs, original_frames_length = self.read_npz(npz_path, index)
         y1, y2, num_period = self.adjust_label(self.label_list[index], original_frames_length, self.num_period)
         return video_imgs, y1, y2, num_period
 
@@ -77,7 +84,7 @@ class MyDataset(Dataset):
         """返回数据集的大小"""
         return len(self.file_list)
 
-    def read_npz(self, npz_path):
+    def read_npz(self, npz_path, index):
         """
 
         Args:
@@ -90,9 +97,23 @@ class MyDataset(Dataset):
 
 
         """
-        with np.load(npz_path) as data:
-            frames = data['imgs']
-            fps = data['fps'].item()
+        if self.memory_tag[index]:
+            tag = 'loading form ram'
+            ts = time.time()
+            frames = self.file_imgs_np[index]
+            fps = self.file_fps_np[index]
+        else:
+            tag = 'loading form disk'
+            ts = time.time()
+            with np.load(npz_path) as data:
+                frames = data['imgs']
+                fps = data['fps'].item()
+            self.file_imgs_np[index] = frames
+            self.file_fps_np[index] = fps
+            self.memory_tag[index] = True
+        te = time.time()
+        if te - ts > 5:
+            print('file:', self.file_list[index], ' loaded take ', te - ts, 's and it is ', tag)
         frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]; h,w is 224
         frames -= 127.5
         frames /= 127.5
@@ -118,12 +139,13 @@ class MyDataset(Dataset):
         y2_tensor = torch.LongTensor(y2)
         return y1_tensor, y2_tensor, num_period
 
+#
 # data_root = r'./data/LSP_npz(64)'
 # label_file = 'train.csv'
 # data = MyDataset(data_root, label_file, 64, 'train')
 # for i in range(len(data)):
-#     imgs,y1,y2,count = data[i]
-# # a, b, c, d = test[1]
-# # tag = ['train', 'valid', 'test']
-# #
-# data_root = r'/p300/LSP'
+#     imgs, y1, y2, count = data[0]
+# # # a, b, c, d = test[1]
+# # # tag = ['train', 'valid', 'test']
+# # #
+# # data_root = r'/p300/LSP'

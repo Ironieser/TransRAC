@@ -16,6 +16,8 @@ import platform
 import random
 from torchvision.transforms import ToPILImage
 from torchvision.utils import make_grid
+import torch.nn.functional as F
+import torch.backends.cudnn
 
 # from tool import data_utils
 
@@ -23,7 +25,7 @@ from torchvision.utils import make_grid
 # import shutil
 # import ipdb
 
-cv2.setNumThreads(0)
+# cv2.setNumThreads(0)
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 # os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 if platform.system() == 'Windows':
@@ -32,7 +34,7 @@ if platform.system() == 'Windows':
     device = torch.device('cpu')
 else:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
-    device_ids = [1, 2, 3, 4, 5, 6, 7]
+    device_ids = [1, 0]
     torch.backends.cudnn.benchmark = True
     device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
 
@@ -42,18 +44,18 @@ np.random.seed(1)
 
 epoch_size = 5000
 FRAME = 64
-BATCH_SIZE = 14
+BATCH_SIZE = 10
 random.seed(1)
-LR = 1e-5
+LR = 6e-6
 W1 = 1
-W2 = 20
-NUM_WORKERS = 24
-LOG_DIR = './repnet_log1112_2'
-CKPT_DIR = './ckp_repnet_2'
+W2 = 10
+NUM_WORKERS = 32
+LOG_DIR = './repnet_log1113_1'
+CKPT_DIR = './ckp_repnet_3'
 NPZ = True
 P = 0.2
-lastCkptPath = None
-
+lastCkptPath = '/p300/SWRNET/ckp_repnet_2/ckpt33_trainMAE_1.862.pt'
+# lastCkptPath = None
 if platform.system() == 'Windows':
     NUM_WORKERS = 0
 
@@ -239,8 +241,9 @@ if __name__ == '__main__':
     criterion1 = nn.CrossEntropyLoss()
     criterion2 = nn.BCEWithLogitsLoss()
     scaler = GradScaler()
-    optimizer = torch.optim.Adam([{'params': model.parameters(), 'initial_lr': 1e-5}], lr=LR)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98, last_epoch=currEpoch)
+    # optimizer = torch.optim.Adam([{'params': model.parameters(), 'initial_lr': 1e-5}], lr=LR)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98, last_epoch=-1)
     # print("********* Training begin *********")
     ep_pbar = tqdm(range(currEpoch, epoch_size))
     train_step = 0
@@ -253,7 +256,6 @@ if __name__ == '__main__':
         pbar = tqdm(train_loader, total=len(train_loader))
         batch_idx = 0
         model.train()
-        train_step = 0
         for datas, target1, target2, count in pbar:
             # ipdb.set_trace()
 
@@ -282,7 +284,7 @@ if __name__ == '__main__':
             MAE, OBO, pre_count = eval_model(y1, y2, count)
             train_label.append(count.numpy()[0])
             train_pre.append(pre_count[0])
-            train_gap.append(pre_count[0] - count[0])
+            train_gap.append(pre_count[0] - count.numpy()[0])
 
             train_MAE.append(MAE)
             train_OBO.append(OBO)
@@ -303,18 +305,21 @@ if __name__ == '__main__':
                 b_loss2 = np.mean(train_loss2[batch_idx - k_batch:batch_idx])
                 b_MAE = np.mean(train_MAE[batch_idx - k_batch:batch_idx])
                 b_OBO = np.mean(train_OBO[batch_idx - k_batch:batch_idx])
+                sim_img = F.interpolate(sim_matrix.detach().cpu(), scale_factor=[5, 5])
                 writer.add_image('sim_matrix',
-                                 make_grid(sim_matrix.detach().cpu(), nrow=3, padding=20,
-                                           normalize=True, pad_value=1), train_step)
+                                 make_grid(sim_img, nrow=3, padding=20,
+                                           normalize=False, pad_value=1), train_step)
                 writer.add_scalars('train/batch_pre',
                                    {"pre": float(np.mean(train_pre)), "label": float(np.mean(train_label))},
                                    train_step)
-                train_label, train_pre = [], []
+                writer.add_scalars('train/batch_gap',
+                                   {"gap": float(np.mean(train_gap))}, train_step)
+                train_label, train_pre, train_gap = [], [], []
                 writer.add_scalars('train/batch_MAE', {"MAE": float(b_MAE)}, train_step)
                 writer.add_scalars('train/batch_OBO', {"OBO": float(b_OBO)}, train_step)
                 writer.add_scalars('train/batch_Loss', {"Loss": float(b_loss)}, train_step)
-                writer.add_scalars('train/batch_Loss1', {"Loss1": float(w1 * b_loss1)}, train_step)
-                writer.add_scalars('train/batch_Loss2', {"Loss2": float(w2 * b_loss2)}, train_step)
+                writer.add_scalars('train/batch_Loss1', {"Loss1": float(b_loss1)}, train_step)
+                writer.add_scalars('train/batch_Loss2', {"Loss2": float(b_loss2)}, train_step)
                 train_step += 1
             batch_idx += 1
         # valid
@@ -360,13 +365,13 @@ if __name__ == '__main__':
                 writer.add_scalars('valid/batch_MAE', {"MAE": float(b_MAE)}, valid_step)
                 writer.add_scalars('valid/batch_OBO', {"OBO": float(b_OBO)}, valid_step)
                 writer.add_scalars('valid/batch_Loss', {"Loss": float(b_loss)}, valid_step)
-                writer.add_scalars('valid/batch_Loss1', {"Loss1": float(w1 * b_loss1)}, valid_step)
-                writer.add_scalars('valid/batch_Loss2', {"Loss2": float(w2 * b_loss2)}, valid_step)
-                train_step += 1
+                writer.add_scalars('valid/batch_Loss1', {"Loss1": float(b_loss1)}, valid_step)
+                writer.add_scalars('valid/batch_Loss2', {"Loss2": float(b_loss2)}, valid_step)
+                valid_step += 1
             batch_idx += 1
 
         # per epoch of train and valid over
-        scheduler.step()
+        # scheduler.step()
         ep_pbar.set_postfix({'Epoch': epoch,
                              'loss': float(np.mean(train_loss)),
                              'Tr_MAE': float(np.mean(train_MAE)),

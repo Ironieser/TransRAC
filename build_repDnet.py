@@ -124,9 +124,9 @@ class RepNetPeriodEstimator(nn.Module):
                                               dropout=self.transformer_dropout_rate)
             self.transformer_layers.append(tfel)
 
-        # period prediction module
+        # density prediction module
         self.dropout_layer = nn.Dropout(self.dropout_rate)
-        num_preds = self.num_frames
+        num_preds = 1
         self.fc_layers = nn.ModuleList()
 
         for channels in self.period_fc_channels:
@@ -140,21 +140,6 @@ class RepNetPeriodEstimator(nn.Module):
         self.fc_layers.append(
             nn.Linear(in_features=self.period_fc_channels[0],
                       out_features=num_preds)
-        )
-
-        # Within Period Module
-        num_preds = 1
-        self.within_period_fc_layers = nn.ModuleList()
-        for channels in self.within_period_fc_channels:
-            self.within_period_fc_layers.append(
-                nn.Linear(in_features=channels,
-                          out_features=channels)
-            )
-            self.fc_layers.append(nn.ReLU())
-        self.within_period_fc_layers.append(
-            nn.Linear(in_features=self.within_period_fc_channels[0],
-                      out_features=num_preds
-                      )
         )
 
     def forward(self, x: torch.Tensor, epoch=0) -> tuple:
@@ -212,9 +197,8 @@ class RepNetPeriodEstimator(nn.Module):
                 x = x.transpose(1, 2)  # => [b,f,c,f]
                 x = torch.reshape(x, [b, self.num_frames, -1])
                 # x = torch.Size[20, 64, 2048]
-                within_period_x = x
 
-                # Period prediction
+                # density prediction
                 x = self.input_projection(x)
                 x += self.pos_encoding.to(x.device)
                 # x = torch.Size[20, 64, 512]
@@ -228,20 +212,7 @@ class RepNetPeriodEstimator(nn.Module):
                     x = self.dropout_layer(x)
                     x = fc_layer(x)
 
-                # Within period prediction
-                within_period_x = self.input_projection2(within_period_x)
-                within_period_x += self.pos_encoding2.to(within_period_x.device)
-
-                for transformer_layer in self.transformer_layers2:
-                    within_period_x = transformer_layer(within_period_x)
-                within_period_x = torch.reshape(within_period_x, [b, self.num_frames, -1])
-
-                for fc_layer in self.within_period_fc_layers:
-                    within_period_x = self.dropout_layer(within_period_x)
-                    within_period_x = fc_layer(within_period_x)
-
-                within_period_x = within_period_x.reshape([b, -1])
-                return x, within_period_x, final_embs, sim_matrix.permute(0, 3, 1, 2)
+                return x.reshape([b, -1]), final_embs, sim_matrix.permute(0, 3, 1, 2)
             # return x, within_period_x
 
     def preprocess(self, imgs: torch.Tensor):

@@ -17,8 +17,17 @@ def get_integrate(x_1, x_2, avg, sig):
 
 
 def normalize_label(y_frame, y_length):
-    # y_length: 帧总数
-    # return: normalize_label  size:narray(y_length,)
+    """
+
+    Args:
+        y_frame: 帧
+        y_length: 帧总数
+
+    Returns:
+        y_label  size:narray(y_length,)
+
+    """
+
     y_label = np.zeros(y_length, dtype=float)  # 坐标轴长度，即帧数
     for i in range(0, y_frame.size, 2):
         x_a = y_frame[i]
@@ -36,8 +45,10 @@ def normalize_label(y_frame, y_length):
                 y_label[x_a + j] += y_ing
         else:
             y_label[x_a] = 1
-    return y_label
-
+    # num_period = 0
+    # for i in range(len(y_label)):
+    #     num_period += y_label[i]
+    return y_label, y_label.sum()
 
 # # # test
 # y_frame = np.array([4, 4, 6, 8, 9, 12, 13, 15, 15, 16])  # 关键帧

@@ -18,6 +18,9 @@ from torchvision.transforms import ToPILImage
 from torchvision.utils import make_grid
 import torch.nn.functional as F
 import torch.backends.cudnn
+from vision import sm_heat_map
+import seaborn as sns
+from torchvision.transforms import ToTensor
 
 # from tool import data_utils
 
@@ -234,10 +237,8 @@ if __name__ == '__main__':
 
                 b_MAE = np.mean(train_MAE[batch_idx - k_batch:batch_idx])
                 b_OBO = np.mean(train_OBO[batch_idx - k_batch:batch_idx])
-                sim_img = F.interpolate(sim_matrix.detach().cpu(), scale_factor=[5, 5])
-                writer.add_image('sim_matrix',
-                                 make_grid(sim_img, nrow=3, padding=20,
-                                           normalize=False, pad_value=1), train_step)
+                sim_img = sm_heat_map.get_sm_hm(sim_matrix.detach().cpu())
+                writer.add_image('sim_matrix', sim_img, train_step)
                 writer.add_scalars('train/batch_pre',
                                    {"pre": float(np.mean(train_pre)), "label": float(np.mean(train_label))},
                                    train_step)

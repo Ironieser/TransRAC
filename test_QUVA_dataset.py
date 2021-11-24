@@ -10,7 +10,7 @@ from label2rep import rep_label
 from torch.utils.data import Dataset, DataLoader
 
 import matplotlib.pyplot as plt
-import ipdb
+
 # cv2.setNumThreads(0)
 import time
 
@@ -37,27 +37,31 @@ class MyDataset(Dataset):
             raise ValueError('module is wrong.')
         # self.path = os.path.join(self.root_dir, self.child_dir)
         self.video_filename = os.listdir(self.video_dir)
-        self.label_filename = os.path.join(self.root_dir, label_dir)
+        self.label_path = os.path.join(self.root_dir, label_dir)
         self.file_list = []
         self.label_list = []
-        self.num_idx = 4
+        self.num_idx = 5
         self.num_frames = frames  # model frames
         self.num_period = 64
         self.error = 0
         self.image_size = 224
-        df = pd.read_csv(self.label_filename)
-        for i in range(0, len(df)):
-            filename = df.loc[i, 'name']
-            label_tmp = df.values[i][self.num_idx:].astype(np.float64)
-            label_tmp = label_tmp[~np.isnan(label_tmp)].astype(np.int32)
-            # if self.isdata(filename, label_tmp):  # data is right format ,save in list
-            self.file_list.append(filename)
-            self.label_list.append(label_tmp)
-        # to save data in ram
-        # self.file_imgs_np = np.zeros([len(self.file_list), self.num_frames, 3, self.image_size, self.image_size])
-        # # self.file_imgs_np = np.zeros([4, self.num_frames, 3, self.image_size, self.image_size])
-        # self.file_fps_np = np.zeros([len(self.file_list)])
-        # self.memory_tag = np.full(len(self.file_list), False)
+        video_dir = r'/p300/QUVA/test/'
+        label_dir = r'/p300/QUVA/annotations/'
+        video_list = os.listdir(video_dir)
+        self.QUVA_file = []
+        self.QUVA_label = []
+        for video in video_list:
+            video_name = os.path.splitext(video)[0]
+            label_filename = video_name + '.npy'
+            label_path = label_dir + label_filename
+            #     with np.load(label_path) as label:
+            label = np.load(label_path)
+            count = len(label) - 1
+            video_path = video_dir + video
+            self.QUVA_file.append(video_path)
+            self.QUVA_label.append(count)
+        for i in range(len(self.QUVA_label)):
+            pass
 
     def __getitem__(self, index):
         """
@@ -72,11 +76,10 @@ class MyDataset(Dataset):
             num_period : count by processing labels:(y2/y1)[~np.isnan(y2/y1).bool()].sum() : ndarray [1]
             ps: if count !=  num_period : return num_period
         """
-        filename = self.file_list[index]
-        npz_name = os.path.splitext(filename)[0] + '.npz'
-        npz_path = os.path.join(self.video_dir, npz_name)
-        video_imgs, original_frames_length = self.read_npz(npz_path, index)
 
+        filename = self.file_list[index]
+        video_path = os.path.join(self.video_dir, filename)
+        video_imgs, original_frames_length = self.read_video(video_path)
         y1, y2, num_period = self.adjust_label(self.label_list[index], original_frames_length, self.num_period)
         return video_imgs, y1, y2, num_period
 
@@ -84,44 +87,52 @@ class MyDataset(Dataset):
         """返回数据集的大小"""
         return len(self.file_list)
 
-    def read_npz(self, npz_path, index):
-        """
+    def read_video(self, video_filename, width=224, height=224):
+        """Read video from file."""
+        # print('-------------------------------------')
+        # print(video_filename, 'to open')
 
-        Args:
-            npz_path: the absolute path to video.npz
+        try:
+            cap = cv2.VideoCapture(video_filename)
+            frames = []
+            if cap.isOpened():
+                while True:
+                    success, frame_bgr = cap.read()
+                    if success is False:
+                        break
+                    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+                    frame_rgb = cv2.resize(frame_rgb, (width, height))
+                    frames.append(frame_rgb)
+            cap.release()
+            original_frames_length = len(frames)
 
-        Returns:
-            frames: tensor [f,c,h,w] which has been normalized.
-                    h and w are 224;
-            fps: the original of video.fps
+            frames = self.adjust_frames(frames)  # [f,w,h,c]
+            frames = np.asarray(frames)  # [f,hw,,c]
+            frames = frames.transpose(0, 3, 2, 1)  # [f,c,h,w]
+            frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]
+            frames -= 127.5
+            frames /= 127.5
+        except:
+            raise ValueError('cant open  video file')
+        return frames, original_frames_length
 
+    def adjust_frames(self, frames):
+        frames_adjust = []
+        frame_length = len(frames)
+        if self.num_frames <= len(frames):
+            for i in range(1, self.num_frames + 1):
+                frame = frames[i * frame_length // self.num_frames - 1]
+                frames_adjust.append(frame)
 
-        """
-        # if self.memory_tag[index]:
-        #     tag = 'loading form ram'
-        #     ts = time.time()
-        #     frames = self.file_imgs_np[index]
-        #     fps = self.file_fps_np[index]
-        # else:
-        #     tag = 'loading form disk'
-        #     ts = time.time()
-        #     with np.load(npz_path) as data:
-        #         frames = data['imgs']
-        #         fps = data['fps'].item()
-        #     self.file_imgs_np[index] = frames
-        #     self.file_fps_np[index] = fps
-        #     self.memory_tag[index] = True
-        # te = time.time()
-        # if te - ts > 5:
-        #     # print('file:', self.file_list[index], ' loaded take ', te - ts, 's and it is ', tag)
-        #     pass
-        with np.load(npz_path) as data:
-            frames = data['imgs']
-            fps = data['fps'].item()
-        frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]; h,w is 224
-        frames -= 127.5
-        frames /= 127.5
-        return frames, fps
+        else:  # 当帧数不足时，补足帧数
+            for i in range(frame_length):
+                frame = frames[i]
+                frames_adjust.append(frame)
+            for i in range(self.num_frames - frame_length):
+                if len(frames) > 0:
+                    frame = frames[-1]
+                    frames_adjust.append(frame)
+        return frames_adjust  # [f,w,h,3]
 
     def adjust_label(self, label, frame_length, num_frames=64):
         """

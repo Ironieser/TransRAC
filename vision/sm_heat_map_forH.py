@@ -8,7 +8,8 @@ import PIL.Image
 import torch
 import PIL
 from typing import Optional, Tuple
-import torch.nn.functional as F
+import sm_heat_map
+
 
 def get_sm_hm(
         sim_matrix: torch.Tensor,
@@ -62,10 +63,9 @@ def get_sm_hm(
         buf.seek(0)
         image = PIL.Image.open(buf)
         image = ToTensor()(image).unsqueeze(0)  # => []
-        title = 'per:' + str(pre_count[i]) + "  grand truth:" + str(grand_truth[i])
-        # title = str(i)
+        # title = 'per:' + str(pre_count[i]) + "  grand truth:" + str(grand_truth[i])
+        title = str(i)
         plt.title(title)  # 标题
-        imgs = F.interpolate()
         if i == 0:
             images = image
         else:

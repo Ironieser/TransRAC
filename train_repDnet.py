@@ -2,7 +2,7 @@ import cv2
 import torch
 import torch.nn as nn
 # from build_swrepnet import swrepnet
-from build_repDnet import RepNetPeriodEstimator
+from build_repnet_DM import RepNetPeriodEstimator
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from Ddataset import MyDataset
@@ -53,11 +53,11 @@ LR = 6e-6
 W1 = 1
 W2 = 10
 NUM_WORKERS = 32
-LOG_DIR = './repnet_log1114_1'
-CKPT_DIR = './ckp_repDnet_1'
+LOG_DIR = './repnet_log1118_1'
 NPZ = True
+CKPT_DIR = './ckp_repDnet_4'
 P = 0.2
-# lastCkptPath = '/p300/SWRNET/ckp_repnet_2/ckpt33_trainMAE_1.862.pt'
+# lastCkptPath = '/p300/SWRNET/ckp_repDnet_6/ckpt99_trainMAE_0.288.pt'
 lastCkptPath = None
 if platform.system() == 'Windows':
     NUM_WORKERS = 0
@@ -115,10 +115,10 @@ if __name__ == '__main__':
         print("Let's use", torch.cuda.device_count(), "GPUs!")
         model = MMDataParallel(model, device_ids=device_ids)
     model.to(device)
-    data_dir1 = r'/p300/LSP'
+    data_dir1 = r'/p300/LLSP'
     data_dir2 = r'./data/LSP_npz(64)'
     data_dir3 = r'/dfs/data/LSP/LSP'
-    if os.path.exists(data_dir1):
+    if os.path.exists(data_dir1 + '_npz(64)'):
         data_root = data_dir1
         if NPZ:
             if FRAME == 64:
@@ -139,9 +139,10 @@ if __name__ == '__main__':
 
     train_dataset = MyDataset(root_dir=data_root, label_dir=train_label, frames=FRAME, method='train')
     valid_dataset = MyDataset(root_dir=data_root, label_dir=valid_label, frames=FRAME, method='valid')
+    test_dataset = MyDataset(root_dir=data_root, label_dir=valid_label, frames=FRAME, method='test')
 
     train_loader = DataLoader(dataset=train_dataset, pin_memory=True, batch_size=BATCH_SIZE,
-                              drop_last=False, shuffle=False, num_workers=NUM_WORKERS)
+                              drop_last=False, shuffle=True, num_workers=NUM_WORKERS)
     # if torch.cuda.is_available():
     #     train_loader = data_utils.CudaDataLoader(train_loader, device=0)
 
@@ -165,7 +166,6 @@ if __name__ == '__main__':
 
     # lastCkptPath = '/p300/SWRNET/checkpoint/ckpt350_trainMAE_0.8896425843327483.pt'
     # lastCkptPath = '/p300/SWRNET/checkpoints5/ckpt9_trainMAE_0.663.pt'
-
     if lastCkptPath is not None:
         print("loading checkpoint")
         checkpoint = torch.load(lastCkptPath)
@@ -173,20 +173,23 @@ if __name__ == '__main__':
         trainLosses = checkpoint['trainLoss']
         validLosses = checkpoint['valLoss']
         model.load_state_dict(checkpoint['state_dict'], strict=False)
-
+        currTrainstep = checkpoint['train_step']
+        currValidationstep = checkpoint['valid_step']
         # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         del checkpoint
     else:
         currEpoch = 0
+        currTrainstep = 0
+        currValidationstep = 0
     criterion1 = nn.MSELoss()
     scaler = GradScaler()
     # optimizer = torch.optim.Adam([{'params': model.parameters(), 'initial_lr': 1e-5}], lr=LR)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
-    # scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98, last_epoch=-1)
+    optimizer = torch.optim.Adam([{'params': model.parameters(), 'initial_lr': 6e-6}], weight_decay=0.01, lr=LR)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98, last_epoch=currEpoch - 1)
     # print("********* Training begin *********")
     ep_pbar = tqdm(range(currEpoch, epoch_size))
-    train_step = 0
-    valid_step = 0
+    train_step = currTrainstep
+    valid_step = currValidationstep
     for epoch in ep_pbar:
         # save evaluation metrics
         train_MAE, train_OBO, valid_MAE, valid_OBO, train_loss, train_loss1, train_loss2 = [], [], [], [], [], [], []
@@ -231,14 +234,14 @@ if __name__ == '__main__':
                               'Train MAE': float(np.mean(train_MAE)),
                               'Train OBO': float(np.mean(train_OBO)),
                               'lr': optimizer.state_dict()['param_groups'][0]['lr']})
-            k_batch = int(len(train_loader) / 10)
+            k_batch = int(len(train_loader) / 10) if int(len(train_loader) / 10) > 0 else 1
             if batch_idx % k_batch == 0 and batch_idx != 0:
                 b_loss = np.mean(train_loss[batch_idx - k_batch:batch_idx])
 
                 b_MAE = np.mean(train_MAE[batch_idx - k_batch:batch_idx])
                 b_OBO = np.mean(train_OBO[batch_idx - k_batch:batch_idx])
-                sim_img = sm_heat_map.get_sm_hm(sim_matrix.detach().cpu())
-                writer.add_image('sim_matrix', sim_img, train_step)
+                sim_img = sm_heat_map.get_sm_hm(sim_matrix.detach().cpu(), pre_count, count.view(-1).numpy())
+                writer.add_image('sim_matrix/sim_img', sim_img, train_step)
                 writer.add_scalars('train/batch_pre',
                                    {"pre": float(np.mean(train_pre)), "label": float(np.mean(train_label))},
                                    train_step)
@@ -291,7 +294,7 @@ if __name__ == '__main__':
             batch_idx += 1
 
         # per epoch of train and valid over
-        # scheduler.step()
+        scheduler.step()
         ep_pbar.set_postfix({'Epoch': epoch,
                              'loss': float(np.mean(train_loss)),
                              'Tr_MAE': float(np.mean(train_MAE)),
@@ -325,6 +328,8 @@ if __name__ == '__main__':
                 'valLoss': float(np.mean(valid_loss)),
                 'valMAE': float(np.mean(valid_MAE)),
                 'valOBO': float(np.mean(valid_OBO)),
+                'train_step': train_step,
+                'valid_step': valid_step
             }
             torch.save(checkpoint,
                        CKPT_DIR + ckpt_name + str(epoch) + '_trainMAE_' +

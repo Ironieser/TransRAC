@@ -13,6 +13,7 @@ import math
 # from torchsummary import summary
 from models.swin_transformer import SwinTransformer
 from torch.cuda.amp import autocast
+import ipdb
 # from config import get_config
 # from models import build_model
 # from data import build_loader
@@ -34,11 +35,13 @@ class attention(nn.Module):
 
     def forward(self, q, k, v, attn_mask=None):
         # q: [B, head, F, model_dim]
+
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.scale)  # [B,Head, F, F]
         if attn_mask:
             # 给需要mask的地方设置一个负无穷
             scores = scores.masked_fill_(attn_mask, -np.inf)
         # 计算softmax
+        # ipdb.set_trace()
         scores = self.softmax(scores)
         # 添加dropout
         scores = self.dropout(scores)  # [B,head, F, F]
@@ -64,13 +67,12 @@ class Similarity_matrix(nn.Module):
 
     def forward(self, query, key, value, attn_mask=None):
         # 残差连接
-
         batch_size = query.size(0)
 
         num_heads = self.num_heads
 
         # linear projection
-
+        # ipdb.set_trace()
         query = self.linear_q(query)  # [B,F,model_dim]
         key = self.linear_k(key)
         value = self.linear_v(value)
@@ -202,17 +204,20 @@ class swcp(nn.Module):
     def forward(self, x):
 
         # Ensures we are always using the right batch_size during train/eval.
+
         b, f, c, h, w = x.shape  # x:[B,F,C,H,W]  [B,F,3,224,224]
         assert self.image_size == x.shape[3]
 
         # Swin_T Feature Extractor per frame
         x = x.view([-1, c, self.image_size, self.image_size])
+
         with torch.no_grad():
-            x = self.sw_1(x)  # output: [b*f,1024]
+            x = self.sw_1(x)  # output: [b*f,128]
         with autocast():
             x = x.view([b, -1, 128])  # output: [B, frames, features]
 
             # Get self-similarity matrix.
+
             x = self.sm(x, x, x)  # output:[B, head, H_frames, W_frames]
             x = x.transpose(1, 2)  # to output:[B, H_frames, head, W_frames]
             x = torch.reshape(x, [b, f, -1])  # output: [B, f，head*f] [2,10,4*10]
@@ -249,24 +254,3 @@ class swcp(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-# nn.Linear()
-# config = get_config()
-# x = build_model(config)
-# input = torch.rand([2, 10, 3, 224, 224])
-# # input1 = input[0].unsqueeze(0)
-# # input2 = input[1].unsqueeze(0)
-# # print(input1[0] == input[0])
-# # print(input2[0] == input[1])
-# net = swrepnet(frame=10)
-# # print(net)
-# # sw_path = r'swt_log/swin_base_patch4_window12_384_22k.pth'
-# # net.load_state_dict(torch.load(sw_path), strict=False)
-# output = net(input)
-# # output1 = net(input1)
-# # output2 = net(input2)
-# print(output.shape)
-# # print(output)
-# print(output[0] == output1[0])
-# print(output[1] == output2[0])
-# print(net)
-# summary(net, (3, 224, 224))

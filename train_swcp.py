@@ -14,12 +14,13 @@ from mmcv.parallel import MMDataParallel, MMDistributedDataParallel
 from tqdm import tqdm
 import platform
 import random
+import torch.backends.cudnn
 
 # from tool import data_utils
 
 # from torchsummary import summary
 # import shutil
-# import ipdb
+import ipdb
 
 cv2.setNumThreads(0)
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -27,30 +28,34 @@ cv2.setNumThreads(0)
 if platform.system() == 'Windows':
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     device_ids = [0]
-
+    device = torch.device('cpu')
 else:
     os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
-    device_ids = [0, 1]
+    device_ids = [0, 3]
     torch.backends.cudnn.benchmark = True
-device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device('cpu')
+    device = torch.device("cuda:" + str(device_ids[0]) if torch.cuda.is_available() else "cpu")
+
 torch.manual_seed(1)
 torch.cuda.manual_seed_all(1)
 np.random.seed(1)
 
 epoch_size = 5000
 FRAME = 64
-BATCH_SIZE = 2
+BATCH_SIZE = 1
 random.seed(1)
 LR = 1e-5
 W1 = 5
 W2 = 1
 NUM_WORKERS = 0
-LOG_DIR = './swrc_log1111_3'
-CKPT_DIR = './checkpoints5'
+LOG_DIR = './swrc_log1118_1'
+CKPT_DIR = './swrc_ckpt'
 NPZ = True
 P = 0.2
+lastCkptPath = '/p300/SWRNET/checkpoints5/ckpt27_trainMAE_0.666.pt'
+if platform.system() == 'Windows':
+    NUM_WORKERS = 0
+    lastCkptPath = None
+    BATCH_SIZE = 1
 
 
 def eval_model(y1, y2, label_count):
@@ -145,8 +150,10 @@ if __name__ == '__main__':
 
     model = swcp(frame=FRAME)
     # model = torch.nn.DataParallel(model.to(device), device_ids=device_ids)
-    # model = MMDataParallel(model.to(device), device_ids=device_ids)
-
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        model = MMDataParallel(model, device_ids=device_ids)
+    model = model.to(device)
     data_dir1 = r'/p300/LSP'
     data_dir2 = r'./data/LSP_npz(64)'
     data_dir3 = r'/dfs/data/LSP/LSP'
@@ -167,10 +174,10 @@ if __name__ == '__main__':
         raise ValueError('NO data root')
 
     train_label = r'train.csv'
-    valid_label = r'valid.csv'
+    valid_label = r'test.csv'
 
     train_dataset = MyDataset(root_dir=data_root, label_dir=train_label, frames=FRAME, method='train')
-    valid_dataset = MyDataset(root_dir=data_root, label_dir=valid_label, frames=FRAME, method='valid')
+    valid_dataset = MyDataset(root_dir=data_root, label_dir=valid_label, frames=FRAME, method='test')
 
     train_loader = DataLoader(dataset=train_dataset, pin_memory=True, batch_size=BATCH_SIZE,
                               drop_last=False,
@@ -206,16 +213,15 @@ if __name__ == '__main__':
                 os.remove(file_path)
     writer = SummaryWriter(log_dir=log_dir)
 
-    # lastCkptPath = '/p300/SWRNET/checkpoint/ckpt350_trainMAE_0.8896425843327483.pt'
     # lastCkptPath = '/p300/SWRNET/checkpoints5/ckpt9_trainMAE_0.663.pt'
-    lastCkptPath = None
+    # lastCkptPath = None
     if lastCkptPath is not None:
         print("loading checkpoint")
         checkpoint = torch.load(lastCkptPath)
         currEpoch = checkpoint['epoch']
         trainLosses = checkpoint['trainLoss']
         validLosses = checkpoint['valLoss']
-        model.load_state_dict(checkpoint['state_dict'], strict=False)
+        model.load_state_dict(checkpoint['state_dict'], strict=True)
 
         # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         del checkpoint
@@ -235,6 +241,7 @@ if __name__ == '__main__':
     # print("********* Training begin *********")
     ep_pbar = tqdm(range(currEpoch, epoch_size))
     for epoch in ep_pbar:
+
         # save evaluation metrics
         train_MAE, train_OBO, valid_MAE, valid_OBO, avg_loss, avg_loss1, avg_loss2 = [], [], [], [], [], [], []
         val_loss1, val_loss2, val_loss = [], [], []
@@ -244,6 +251,8 @@ if __name__ == '__main__':
         model.train()
         for datas, target1, target2, count in pbar:
             # ipdb.set_trace()
+            # ipdb.set_trace()
+            # break
             # print('///////////////////////{} begin to train/////////////////////////////'.format(batch_idx))
             # torch.cuda.empty_cache()
             datas = datas.to(device)
@@ -254,8 +263,9 @@ if __name__ == '__main__':
 
             # 向前传播
             with autocast():
-
+                # ipdb.set_trace()
                 y1, y2 = model(datas)  # output : y1 :[b,f,period] y2: [b,f]
+
                 loss1 = criterion1(y1.transpose(1, 2), target1)
                 loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
@@ -302,6 +312,7 @@ if __name__ == '__main__':
         # print("********* Validation *********")
         model.eval()
         batch_idx = 0
+        valid_GAP = []
         for datas, target1, target2, count in pbar:
             datas = datas.to(device)
             target1 = target1.to(device)  # output: [b,f]
@@ -313,7 +324,9 @@ if __name__ == '__main__':
                 loss1 = criterion1(y1.transpose(1, 2), target1)
                 loss2 = criterion2(y2, target2.float())
                 loss = w1 * loss1 + w2 * loss2
+
             MAE, OBO, pre_count = eval_model(y1, y2, count)
+            # valid_GAP.append(abs(pre_count - count))
 
             valid_MAE.append(MAE)
             valid_OBO.append(OBO)

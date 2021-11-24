@@ -16,7 +16,7 @@ from models.swin_transformer import SwinTransformer
 # from models import build_model
 # from data import build_loader
 # from logger import create_logger
-from tool import load_checkpoint, save_checkpoint, get_grad_norm, auto_resume_helper, reduce_tensor
+import ipdb
 
 device = torch.device("cuda")
 
@@ -196,25 +196,27 @@ class swrepnet(nn.Module):
             x = self.sw_1(x)  # output: [b*f,128]
         x = x.view([b, -1, 128])  # output: [B, frames, features]
         x = self.sm(x, x, x)  # output:[B, head, H_frames, W_frames]
+        sim_matrix = x[0]  # output:[head, H_frames, W_frames]
         x = x.transpose(1, 2)  # to output:[B, H_frames, head, W_frames]
         x = torch.reshape(x, [b, f, -1])  # output: [B, f，head*f] [2,10,4*10]
         x = self.input_projection(x)  # output: [B, f，512]
 
         x = self.pos_encoder(x)  # output:x += [1,f,1]
-        for transformer_layer in self.transformer_layers:
-            x = transformer_layer(x)  # output: [b,f,512]
-        x2 = x.reshape([b, -1])  # => [b,f*512]
+        # for transformer_layer in self.transformer_layers:
+        #     x = transformer_layer(x)  # output: [b,f,512]
+        # x2 = x.reshape([b, -1])  # => [b,f*512]
         # x2 = x  # => [b,f*512]
         for fc in self.DensityMapLayer:
             x = self.dropout_layer(x)
             x = fc(x)
         # output: [b,f,1]
         x = x.reshape([b, -1])  # => [b,-1]
-        for fc in self.counterLayer:
-            x2 = self.dropout_layer(x2)
-            x2 = fc(x2)
-        # output: [b,1]
-        return x, x2
+        # for fc in self.counterLayer:
+        #     x2 = self.dropout_layer(x2)
+        #     x2 = fc(x2)
+        # # output: [b,1]
+        # ipdb.set_trace()
+        return x, sim_matrix.unsqueeze(dim=1)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):

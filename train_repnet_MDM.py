@@ -20,7 +20,7 @@ import torch.nn.functional as F
 import torch.backends.cudnn
 from vision import sm_heat_map
 import seaborn as sns
-
+import time
 from torchvision.transforms import ToTensor
 
 # from tool import data_utils
@@ -54,13 +54,13 @@ LR = 6e-6
 W1 = 1
 W2 = 1
 W3 = 1
-NUM_WORKERS = 20
+NUM_WORKERS = 2
 LOG_DIR = './repnetMDM_log1124_3'
 NPZ = True
 CKPT_DIR = './ckp_repnetMDM_3'
 P = 0.2
-# lastCkptPath = '/p300/SWRNET/ckp_repDnet_6/ckpt99_trainMAE_0.288.pt'
-lastCkptPath = None
+lastCkptPath = '/p300/SWRNET/ckp_repnetMDM_3/ckpt39_trainMAE_0.408.pt'
+# lastCkptPath = None
 if platform.system() == 'Windows':
     NUM_WORKERS = 0
     lastCkptPath = None
@@ -188,7 +188,10 @@ if __name__ == '__main__':
     scaler = GradScaler()
     # optimizer = torch.optim.Adam([{'params': model.parameters(), 'initial_lr': 1e-5}], lr=LR)
     optimizer = torch.optim.Adam([{'params': model.parameters(), 'initial_lr': 6e-6}], weight_decay=0.01, lr=LR)
+    # optimizer = torch.optim.AdamW([{'params': model.parameters(), 'initial_lr': 6e-6}], weight_decay=0.01, lr=LR)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.98, last_epoch=currEpoch - 1)
+    # scheduler1 = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max,eta_min=0,last_epoch=-1)
+
     # print("********* Training begin *********")
     ep_pbar = tqdm(range(currEpoch, epoch_size))
     train_step = currTrainstep
@@ -203,9 +206,15 @@ if __name__ == '__main__':
         batch_idx = 0
         model.train()
         w1, w2, w3 = W1, W2, W3
+        t1 = time.time()
+        ttag = 0
         for datas, target1, count1, target2, count2, target3, count3 in pbar:
             # ipdb.set_trace()
-
+            if ttag % 2 == 0:
+                ts = time.time()
+            else:
+                td = time.time()
+                print('td-ts:', td - ts)
             datas = datas.to(device)
             target1 = target1.to(device)  # output: [b,f]
             count1 = count1.cpu().reshape([-1, 1])
@@ -214,7 +223,6 @@ if __name__ == '__main__':
             target3 = target3.to(device)  # output: [b,f]
             count3 = count3.cpu().reshape([-1, 1])
             optimizer.zero_grad()
-
             # 向前传播
             with autocast():
                 y1, y2, y3, embedding_code, sim_matrix = model(
@@ -228,7 +236,6 @@ if __name__ == '__main__':
                 scaler.scale(loss.float()).backward()
                 scaler.step(optimizer)
                 scaler.update()
-
             # 输出结果
             pre_count1 = torch.sum(y1, dim=1).detach().cpu()
             pre_count2 = torch.sum(y2, dim=1).detach().cpu()
@@ -238,6 +245,7 @@ if __name__ == '__main__':
             count = (w1 * count1 + w2 * count2 + w3 * count3) / (w1 + w2 + w3)
             MAE, OBO = eval_model(pre_count, count)
             pre_count = pre_count.numpy()
+
             train_label.append(count.numpy()[0])
             train_pre.append(pre_count[0])
             train_gap.append(pre_count[0] - count.numpy()[0])
@@ -263,8 +271,8 @@ if __name__ == '__main__':
                 b_loss3 = np.mean(train_loss3[batch_idx - k_batch:batch_idx])
                 b_MAE = np.mean(train_MAE[batch_idx - k_batch:batch_idx])
                 b_OBO = np.mean(train_OBO[batch_idx - k_batch:batch_idx])
-                sim_img = sm_heat_map.get_sm_hm(sim_matrix.detach().cpu(), pre_count, count.view(-1).numpy())
-                writer.add_image('sim_matrix/sim_img', sim_img, train_step)
+                # sim_img = sm_heat_map.get_sm_hm(sim_matrix.detach().cpu(), pre_count, count.view(-1).numpy())
+                # writer.add_image('sim_matrix/sim_img', sim_img, train_step)
                 writer.add_scalars('train/batch_pre',
                                    {"pre": float(np.mean(train_pre)), "label": float(np.mean(train_label))},
                                    train_step)

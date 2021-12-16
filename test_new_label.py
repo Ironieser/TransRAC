@@ -7,7 +7,7 @@ import torch
 import pandas as pd
 import math
 from label2rep import rep_label
-from label2normal import normalize_label, normalize_label2, normalize_label3
+from label2normal import normalize_label
 from torch.utils.data import Dataset, DataLoader
 
 import matplotlib.pyplot as plt
@@ -47,29 +47,28 @@ class MyDataset(Dataset):
         self.error = 0
         self.image_size = 224
         df = pd.read_csv(self.label_filename)
+        self.gap = np.zeros([512])
         for i in range(0, len(df)):
             filename = df.loc[i, 'name']
             label_tmp = df.values[i][self.num_idx:].astype(np.float64)
             label_tmp = label_tmp[~np.isnan(label_tmp)].astype(np.int32)
             # if self.isdata(filename, label_tmp):  # data is right format ,save in list
+            label = label_tmp
+            for i in range(0, len(label), 2):
+                s = label[i]
+                e = label[i + 1]
+                if e - s < 512:
+                    self.gap[e - s] += 1
+                else:
+                    print("e-s：", e - s)
             self.file_list.append(filename)
             self.label_list.append(label_tmp)
         # to save data in ram
-        print('begin saving data in ram')
-        self.file_imgs_np = np.zeros([len(self.file_list), self.num_frames, 3, self.image_size, self.image_size])
-        self.file_fps_np = np.zeros([len(self.file_list)])
-        print('created zero np')
-        for i in range(len(self.file_list)):
-            filename = self.file_list[i]
-            npz_name = os.path.splitext(filename)[0] + '.npz'
-            npz_path = os.path.join(self.video_dir, npz_name)
-            print('loading:', filename)
-            with np.load(npz_path) as data:
-                frames = data['imgs']
-                fps = data['fps'].item()
-            self.file_imgs_np[i] = frames
-            self.file_fps_np[i] = fps
-            print(filename, ' loaded')
+        # self.file_imgs_np = np.zeros([len(self.file_list), self.num_frames, 3, self.image_size, self.image_size])
+        # self.file_imgs_np = np.zeros([4, self.num_frames, 3, self.image_size, self.image_size])
+        # self.file_fps_np = np.zeros([len(self.file_list)])
+        # self.memory_tag = np.full(len(self.file_list), False)
+
     def __getitem__(self, index):
         """
 
@@ -83,28 +82,32 @@ class MyDataset(Dataset):
             HINT: if count !=  num_period : return num_period
         """
 
-        # filename = self.file_list[index]
+        filename = self.file_list[index]
         # npz_name = os.path.splitext(filename)[0] + '.npz'
         # npz_path = os.path.join(self.video_dir, npz_name)
         # video_imgs, original_frames_length = self.read_npz(npz_path, index)
-        video_imgs, original_frames_length = self.load_file(index)
-        y1, num_period, y2, num_period2, y3, num_period3 = self.adjust_label(index,
-                                                                             original_frames_length, self.num_period)
-
-        return video_imgs, y1, num_period, y2, num_period2, y3, num_period3, original_frames_length
-        # return video_imgs, y1,  y2, y3
+        label = self.label_list[index]
+        count64 = 0
+        count32 = 0
+        count128 = 0
+        gap = []
+        for i in range(0, len(label), 2):
+            s = label[i]
+            e = label[i + 1]
+            if e - s > 64:
+                if e - s > 128:
+                    count128 += 1
+                else:
+                    count64 += 1
+            elif e - s > 32:
+                count32 += 1
+            gap.append(e - s)
+        # y1, num_period = self.adjust_label(self.label_list[index], original_frames_length, self.num_period)
+        return count32, count64, count128, gap
 
     def __len__(self):
         """返回数据集的大小"""
         return len(self.file_list)
-
-    def load_file(self, index):
-        frames = self.file_imgs_np[index]
-        fps = self.file_fps_np[index]
-        frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]; h,w is 224
-        frames -= 127.5
-        frames /= 127.5
-        return frames, fps
 
     def read_npz(self, npz_path, index):
         """
@@ -119,20 +122,31 @@ class MyDataset(Dataset):
 
 
         """
-
-        ts = time.time()
-        with np.load(npz_path) as data:
-            frames = data['imgs']
-            fps = data['fps'].item()
-        # self.file_imgs_np[index] = frames
-        # self.file_fps_np[index] = fps
-
+        # if self.memory_tag[index]:
+        if False:
+            # tag = 'loading form ram'
+            # ts = time.time()
+            # frames = self.file_imgs_np[index]
+            # fps = self.file_fps_np[index]
+            pass
+        else:
+            tag = 'loading form disk'
+            ts = time.time()
+            with np.load(npz_path) as data:
+                frames = data['imgs']
+                fps = data['fps'].item()
+            # self.file_imgs_np[index] = frames
+            # self.file_fps_np[index] = fps
+            # self.memory_tag[index] = True
+        te = time.time()
+        if te - ts > 5:
+            print('file:', self.file_list[index], ' loaded take ', te - ts, 's and it is ', tag)
         frames = torch.FloatTensor(frames)  # tensor:[f,c,h,w]; h,w is 224
         frames -= 127.5
         frames /= 127.5
         return frames, fps
 
-    def adjust_label(self, index, frame_length, num_frames=64):
+    def adjust_label(self, label, frame_length, num_frames=64):
         """
         original cycle list to label
         Args:
@@ -143,61 +157,40 @@ class MyDataset(Dataset):
              y1_tensor shape: [num_frames]
              num_period:
         """
-        label = self.label_list[index]
-        filename = self.file_list[index]
         new_crop = []
         for i in range(len(label)):  # frame_length -> 64
             item = min(math.ceil((float(label[i]) / float(frame_length)) * num_frames), num_frames - 1)
             new_crop.append(item)
         new_crop = np.asarray(new_crop)
         # new_label = normalize_label(new_crop, num_frames)
-
         y1, num_period = normalize_label(new_crop, num_frames)
-        y2, num_period2 = normalize_label2(new_crop, num_frames)
-        y3, num_period3 = normalize_label3(new_crop, num_frames)
         y1_tensor = torch.tensor(y1)
-        y2_tensor = torch.tensor(y2)
-        y3_tensor = torch.tensor(y3)
-        if len(new_crop) / 2 - num_period > 0.01:
-            print("video name:{}, original label:{},num period:{}".format(filename, len(new_crop),
-                                                                          num_period))
-        elif len(new_crop) / 2 - num_period2 > 0.01:
-            print("video name:{}, original label:{},num period:{}".format(filename, len(new_crop),
-                                                                          num_period2))
-        elif len(new_crop) / 2 - num_period2 > 0.01:
-            print("video name:{}, original label:{},num period:{}".format(filename, len(new_crop),
-                                                                          num_period3))
 
-        return y1_tensor, num_period, y2_tensor, num_period2, y3_tensor, num_period3
+        return y1_tensor, num_period
 
 
 #
-def test():
-    from torch.utils.data import DataLoader
-    data_root = r'/p300/LLSP_npz(64)'
-    # data_root = r'./data/LSP_npz(64)'
-    label_file = 'train.csv'
-    t1 = time.time()
-    data = MyDataset(data_root, label_file, 64, 'train')
-    train_loader = DataLoader(dataset=data, pin_memory=True, batch_size=8,
-                              drop_last=False, shuffle=True, num_workers=5)
-    t2 = time.time()
-    print(t2 - t1)
-    i = 0
-    epoch = 0
-    while True:
-        print('epoch:', epoch)
-        for datas, target1, count1, target2, count2, target3, count3 in train_loader:
-            i += 1
-            if i % 2 == 0:
-                t4 = time.time()
-                print(t4 - t3)
-            else:
-                t3 = time.time()
-            # print(t4-t3)
-        epoch += 1
-# if __name__ == '__main__':
-#     test()
+data_root = r'./data/LSP_npz(64)'
+label_file = 'train.csv'
+dataset = MyDataset(data_root, label_file, 64, 'train')
+# dataloader = DataLoader(dataset=dataset, pin_memory=True, batch_size=1,
+#                         drop_last=False, shuffle=False, num_workers=0)
+# for i,c32, c64, c128,gap in enumerate(dataloader):
+gap = dataset.gap
+plt.plot(range(512), gap, '-*', markersize=0.3, linewidth=0.2)
+plt.show()
+# avg_gap = []
+# avg_c64 = []
+# avg_c128 = []
+# for i in range(len(dataset)):
+#     c32, c64, c128, gap = dataset[i]
+#     avg_gap.append(max(gap))
+#     avg_c64.append(c64)
+#     avg_c128.append(c128)
+#     print(i, ' max gap:', max(gap), ' c32:', c32, ' c64:', c64, ' c128:', c128)
+# print(np.mean(avg_gap))
+# print(np.mean(avg_c64))
+# print(np.mean(avg_c128))
 # # # a, b, c, d = test[1]
 # # # tag = ['train', 'valid', 'test']
 # # #

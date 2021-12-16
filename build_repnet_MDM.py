@@ -253,10 +253,8 @@ class RepNetPeriodEstimator(nn.Module):
                     x3 = self.dropout_layer(x3)
                     x3 = fc_layer(x3)
 
-                return x.reshape([b, -1]), x2.reshape([b, -1]), x3.reshape([b, -1]), final_embs, sim_matrix.permute(0,
-                                                                                                                    3,
-                                                                                                                    1,
-                                                                                                                    2)
+                return x.reshape([b, -1]), x2.reshape([b, -1]), x3.reshape([b, -1]), \
+                       final_embs, sim_matrix.permute(0, 3, 1, 2)
             # return x, within_period_x
 
     def preprocess(self, imgs: torch.Tensor):

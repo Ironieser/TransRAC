@@ -9,6 +9,9 @@ Note:
     check dilation on temporal 3d conv
     pairwise_l2_distance transpose for b
     input projection kernel_regularizer
+
+Modified from the open-source implementation available at https://github.com/benjaminjellis/RepNetPyTorch/blob/0f2d299a10b85febe148816886fc34f01cf4d53b/RepNet/RepNetModel.py
+    
 """
 
 import torch
